@@ -1,26 +1,20 @@
 -- language: Lua, file: muscle.lua, target: Pumpkin Muscle Legends
--- no blocking waits. poll in background. UI appears immediately.
+-- EAM menu. auto lift on equipped tool. no guessing.
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TweenService      = game:GetService("TweenService")
 local LocalPlayer       = Players.LocalPlayer
+local Camera            = workspace.CurrentCamera
 
 local MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-if MuscleEvent then
-    print("[ML] MuscleEvent already present:", MuscleEvent:GetFullName())
-end
-
 task.spawn(function()
     while not MuscleEvent do
         MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
         if not MuscleEvent and LocalPlayer.Character then
             MuscleEvent = LocalPlayer.Character:FindFirstChild("MuscleEvent")
-        end
-        if MuscleEvent then
-            print("[ML] MuscleEvent appeared:", MuscleEvent:GetFullName())
-            break
         end
         task.wait(1)
     end
@@ -28,121 +22,334 @@ end)
 
 local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
 local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
-print("[ML] rEvents:", rEvents and "ok" or "MISS",
-      "| cPetshopRemote:", petshopRemote and "ok" or "MISS")
 
 local flags = {
-    fastRep    = false,
-    autoRebirth = false,
-    autoBuyPet = false,
-    petName    = "Green Aura",
-    repDelay   = 0.05,
+    autoLift     = false,
+    liftDelay    = 0.03,
+    autoRebirth  = false,
+    autoBuyPet   = false,
+    petName      = "Green Aura",
+    speed        = false,
+    noclip       = false,
+    infiniteJump = false,
+    fly          = false,
+    flySpeed     = 60,
+    antiFling    = false,
+    fullbright   = false,
+    noFog        = false,
+    fpsBoost     = false,
+    hideGui      = false,
     rebirthDelay = 5,
-    petDelay   = 1,
+    petDelay     = 1,
 }
 
-local function firePunch()
-    local ev = MuscleEvent or LocalPlayer:FindFirstChild("MuscleEvent")
-    if not ev then return end
-    MuscleEvent = ev
-    pcall(function() ev:FireServer("punch", "leftHand") end)
-    pcall(function() ev:FireServer("punch", "rightHand") end)
+-- ── auto lift ──────────────────────────────────────────────────────────────
+local function findWeightTool()
+    local c = LocalPlayer.Character
+    if c then
+        for _, t in ipairs(c:GetChildren()) do
+            if t:IsA("Tool") then return t end
+        end
+    end
+    local bp = LocalPlayer:FindFirstChild("Backpack")
+    if bp then
+        for _, t in ipairs(bp:GetChildren()) do
+            if t:IsA("Tool") then return t end
+        end
+    end
+    return nil
 end
 
 task.spawn(function()
-    while task.wait(flags.repDelay) do
-        if flags.fastRep then firePunch() end
+    while task.wait(flags.liftDelay) do
+        if flags.autoLift then
+            local tool = findWeightTool()
+            if tool then
+                pcall(function() tool:Activate() end)
+            end
+        end
     end
 end)
 
-if rEvents and rEvents:FindFirstChild("rebirthRemote") then
-    task.spawn(function()
-        while task.wait(flags.rebirthDelay) do
-            if flags.autoRebirth then
-                pcall(function()
-                    rEvents.rebirthRemote:InvokeServer("rebirthRequest")
-                end)
-            end
+-- ── movement ───────────────────────────────────────────────────────────────
+local function applySpeed()
+    local c = LocalPlayer.Character
+    if c then
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if h then h.WalkSpeed = flags.speed and 60 or 16 end
+    end
+end
+
+local function applyNoclip()
+    local c = LocalPlayer.Character
+    if not c then return end
+    for _, p in ipairs(c:GetDescendants()) do
+        if p:IsA("BasePart") then p.CanCollide = not flags.noclip end
+    end
+end
+
+UserInputService.JumpRequest:Connect(function()
+    if not flags.infiniteJump then return end
+    local c = LocalPlayer.Character
+    if c then
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end)
+
+local flyConn, flyVel
+local function stopFly()
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if flyVel then flyVel:Destroy() flyVel = nil end
+    local c = LocalPlayer.Character
+    if c then
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if h then h.PlatformStand = false end
+    end
+end
+
+local function startFly()
+    stopFly()
+    local c = LocalPlayer.Character
+    if not c then return end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not hrp or not h then return end
+
+    h.PlatformStand = true
+    flyVel = Instance.new("BodyVelocity")
+    flyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    flyVel.Velocity = Vector3.zero
+    flyVel.Parent = hrp
+
+    flyConn = RunService.RenderStepped:Connect(function()
+        if not flags.fly then stopFly() return end
+        if not flyVel or not flyVel.Parent then return end
+        local dir = Vector3.zero
+        local cam = Camera.CFrame
+        if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.S) then dir -= cam.LookVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
+        if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+           or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+            dir -= Vector3.new(0,1,0)
         end
+        flyVel.Velocity = dir.Magnitude > 0
+            and dir.Unit * flags.flySpeed
+            or Vector3.zero
     end)
 end
 
-if petshopRemote then
-    task.spawn(function()
-        while task.wait(flags.petDelay) do
-            if flags.autoBuyPet then
-                pcall(function()
-                    petshopRemote:InvokeServer(flags.petName)
-                end)
+RunService.Heartbeat:Connect(function()
+    if not flags.antiFling then return end
+    local c = LocalPlayer.Character
+    if not c then return end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local v = hrp.AssemblyLinearVelocity
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            math.clamp(v.X, -50, 50),
+            math.clamp(v.Y, -50, 50),
+            math.clamp(v.Z, -50, 50))
+    end
+end)
+
+-- ── lighting ───────────────────────────────────────────────────────────────
+local Lighting = game:GetService("Lighting")
+local originalLighting = {}
+
+local function applyLighting()
+    if flags.fullbright then
+        if originalLighting.Ambient == nil then
+            originalLighting.Ambient = Lighting.Ambient
+            originalLighting.Brightness = Lighting.Brightness
+        end
+        Lighting.Ambient = Color3.fromRGB(255, 255, 255)
+        Lighting.Brightness = 2
+    else
+        if originalLighting.Ambient then
+            Lighting.Ambient = originalLighting.Ambient
+            Lighting.Brightness = originalLighting.Brightness
+        end
+    end
+    if flags.noFog then
+        if originalLighting.FogEnd == nil then
+            originalLighting.FogEnd = Lighting.FogEnd
+        end
+        Lighting.FogEnd = 1e6
+    else
+        if originalLighting.FogEnd then
+            Lighting.FogEnd = originalLighting.FogEnd
+        end
+    end
+    if flags.fpsBoost then
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("Atmosphere") or v:IsA("Sky") then
+                v.Enabled = false
             end
         end
-    end)
+        Lighting.GlobalShadows = false
+    end
 end
 
+-- ── rebirth / pets ─────────────────────────────────────────────────────────
+task.spawn(function()
+    while task.wait(flags.rebirthDelay) do
+        if flags.autoRebirth and rEvents
+           and rEvents:FindFirstChild("rebirthRemote") then
+            pcall(function()
+                rEvents.rebirthRemote:InvokeServer("rebirthRequest")
+            end)
+        end
+    end
+end)
+
+task.spawn(function()
+    while task.wait(flags.petDelay) do
+        if flags.autoBuyPet and petshopRemote then
+            pcall(function()
+                petshopRemote:InvokeServer(flags.petName)
+            end)
+        end
+    end
+end)
+
+-- ── UI ─────────────────────────────────────────────────────────────────────
 local gui = Instance.new("ScreenGui")
-gui.Name = "MLOwn"
+gui.Name = "EAM"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
-gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+gui.DisplayOrder = 999
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
+local glow = Instance.new("Frame")
+glow.Size = UDim2.fromOffset(330, 540)
+glow.Position = UDim2.new(0.5, -165, 0, 40)
+glow.BackgroundColor3 = Color3.fromRGB(140, 80, 255)
+glow.BackgroundTransparency = 0.88
+glow.BorderSizePixel = 0
+glow.ZIndex = 1
+glow.Parent = gui
+Instance.new("UICorner", glow).CornerRadius = UDim.new(0, 26)
+
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(280, 260)
-frame.Position = UDim2.new(0.5, -140, 0, 80)
-frame.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
+frame.Size = UDim2.fromOffset(320, 530)
+frame.Position = UDim2.new(0.5, -160, 0, 46)
+frame.BackgroundColor3 = Color3.fromRGB(8, 8, 14)
 frame.BorderSizePixel = 0
+frame.ZIndex = 2
 frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 22)
 
 local stroke = Instance.new("UIStroke")
-stroke.Thickness = 1.5
-stroke.Color = Color3.fromRGB(150, 90, 255)
-stroke.Transparency = 0.15
+stroke.Thickness = 1.2
+stroke.Color = Color3.fromRGB(160, 100, 255)
 stroke.Parent = frame
 
+local strokeGrad = Instance.new("UIGradient")
+strokeGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 80, 200)),
+    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(150, 90, 255)),
+    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(80, 200, 255)),
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 80, 200)),
+}
+strokeGrad.Parent = stroke
+
+task.spawn(function()
+    while strokeGrad.Parent do
+        strokeGrad.Rotation = (strokeGrad.Rotation + 1.2) % 360
+        task.wait(0.03)
+    end
+end)
+
+-- header
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 54)
-header.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+header.Size = UDim2.new(1, 0, 0, 74)
+header.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
 header.BorderSizePixel = 0
 header.ZIndex = 3
 header.Parent = frame
-Instance.new("UICorner", header).CornerRadius = UDim.new(0, 14)
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 22)
 
 local headerCover = Instance.new("Frame")
-headerCover.Size = UDim2.new(1, 0, 0, 20)
-headerCover.Position = UDim2.new(0, 0, 1, -20)
-headerCover.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
+headerCover.Size = UDim2.new(1, 0, 0, 28)
+headerCover.Position = UDim2.new(0, 0, 1, -28)
+headerCover.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
 headerCover.BorderSizePixel = 0
 headerCover.ZIndex = 3
 headerCover.Parent = header
 
+-- EAM badge with gradient
+local badge = Instance.new("Frame")
+badge.Size = UDim2.fromOffset(50, 50)
+badge.Position = UDim2.fromOffset(14, 12)
+badge.BackgroundColor3 = Color3.fromRGB(150, 90, 255)
+badge.BorderSizePixel = 0
+badge.ZIndex = 4
+badge.Parent = header
+Instance.new("UICorner", badge).CornerRadius = UDim.new(0, 14)
+
+local badgeGrad = Instance.new("UIGradient")
+badgeGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(220, 70, 255)),
+    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(150, 90, 255)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(70, 160, 255)),
+}
+badgeGrad.Rotation = 135
+badgeGrad.Parent = badge
+
+local badgeText = Instance.new("TextLabel")
+badgeText.Size = UDim2.fromScale(1, 1)
+badgeText.BackgroundTransparency = 1
+badgeText.Text = "EAM"
+badgeText.TextColor3 = Color3.fromRGB(255, 255, 255)
+badgeText.Font = Enum.Font.GothamBlack
+badgeText.TextSize = 16
+badgeText.ZIndex = 5
+badgeText.Parent = badge
+
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -80, 0, 26)
-title.Position = UDim2.fromOffset(18, 6)
+title.Size = UDim2.new(1, -160, 0, 26)
+title.Position = UDim2.fromOffset(76, 12)
 title.BackgroundTransparency = 1
-title.Text = "ML"
+title.Text = "EAM"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBlack
-title.TextSize = 20
+title.TextSize = 22
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 4
 title.Parent = header
 
 local subtitle = Instance.new("TextLabel")
-subtitle.Size = UDim2.new(1, -80, 0, 14)
-subtitle.Position = UDim2.fromOffset(18, 30)
+subtitle.Size = UDim2.new(1, -160, 0, 16)
+subtitle.Position = UDim2.fromOffset(76, 38)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "own build"
-subtitle.TextColor3 = Color3.fromRGB(140, 140, 170)
-subtitle.Font = Enum.Font.Gotham
-subtitle.TextSize = 10
+subtitle.Text = "Muscle Legends  •  v1"
+subtitle.TextColor3 = Color3.fromRGB(150, 150, 180)
+subtitle.Font = Enum.Font.GothamMedium
+subtitle.TextSize = 11
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.ZIndex = 4
 subtitle.Parent = header
 
+local minBtn = Instance.new("TextButton")
+minBtn.Size = UDim2.fromOffset(32, 32)
+minBtn.Position = UDim2.new(1, -44, 0, 20)
+minBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+minBtn.BorderSizePixel = 0
+minBtn.Text = "–"
+minBtn.TextColor3 = Color3.fromRGB(220, 220, 235)
+minBtn.Font = Enum.Font.GothamBold
+minBtn.TextSize = 20
+minBtn.ZIndex = 4
+minBtn.Parent = header
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
+
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -20, 1, -70)
-scroll.Position = UDim2.fromOffset(10, 62)
+scroll.Size = UDim2.new(1, -20, 1, -92)
+scroll.Position = UDim2.fromOffset(10, 84)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 3
@@ -153,7 +360,7 @@ scroll.ZIndex = 3
 scroll.Parent = frame
 
 local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 7)
+layout.Padding = UDim.new(0, 8)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = scroll
 
@@ -172,61 +379,73 @@ local function bindButton(btn, fn)
     end)
 end
 
-local function makeToggle(labelText, key)
+local function makeToggle(labelText, key, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -8, 0, 38)
-    btn.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
+    btn.Size = UDim2.new(1, -8, 0, 48)
+    btn.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
     btn.BorderSizePixel = 0
     btn.Text = ""
     btn.AutoButtonColor = false
     btn.ZIndex = 4
     btn.Parent = scroll
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 12)
 
     local accent = Instance.new("Frame")
-    accent.Size = UDim2.new(0, 3, 1, -14)
-    accent.Position = UDim2.fromOffset(8, 7)
-    accent.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+    accent.Size = UDim2.new(0, 3, 1, -20)
+    accent.Position = UDim2.fromOffset(10, 10)
+    accent.BackgroundColor3 = Color3.fromRGB(60, 60, 80)
     accent.BorderSizePixel = 0
     accent.ZIndex = 5
     accent.Parent = btn
     Instance.new("UICorner", accent).CornerRadius = UDim.new(0, 2)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -90, 1, 0)
-    label.Position = UDim2.fromOffset(22, 0)
+    label.Size = UDim2.new(1, -100, 1, 0)
+    label.Position = UDim2.fromOffset(24, 0)
     label.BackgroundTransparency = 1
     label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(220, 220, 235)
+    label.TextColor3 = Color3.fromRGB(230, 230, 245)
     label.Font = Enum.Font.GothamMedium
-    label.TextSize = 13
+    label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
     label.ZIndex = 5
     label.Parent = btn
 
-    local status = Instance.new("TextLabel")
-    status.Size = UDim2.fromOffset(52, 22)
-    status.Position = UDim2.new(1, -60, 0.5, -11)
-    status.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
-    status.BorderSizePixel = 0
-    status.Text = "OFF"
-    status.TextColor3 = Color3.fromRGB(160, 160, 180)
-    status.Font = Enum.Font.GothamBold
-    status.TextSize = 11
-    status.ZIndex = 5
-    status.Parent = btn
-    Instance.new("UICorner", status).CornerRadius = UDim.new(0, 5)
+    local pill = Instance.new("Frame")
+    pill.Size = UDim2.fromOffset(48, 24)
+    pill.Position = UDim2.new(1, -58, 0.5, -12)
+    pill.BackgroundColor3 = Color3.fromRGB(38, 38, 52)
+    pill.BorderSizePixel = 0
+    pill.ZIndex = 5
+    pill.Parent = btn
+    Instance.new("UICorner", pill).CornerRadius = UDim.new(1, 0)
+
+    local knob = Instance.new("Frame")
+    knob.Size = UDim2.fromOffset(18, 18)
+    knob.Position = UDim2.fromOffset(3, 3)
+    knob.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+    knob.BorderSizePixel = 0
+    knob.ZIndex = 6
+    knob.Parent = pill
+    Instance.new("UICorner", knob).CornerRadius = UDim.new(1, 0)
+
+    local function animate(on)
+        TweenService:Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Quad),
+            { Position = on and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3),
+              BackgroundColor3 = on and Color3.fromRGB(255, 255, 255)
+                                      or Color3.fromRGB(100, 100, 120) }):Play()
+        TweenService:Create(pill, TweenInfo.new(0.18),
+            { BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
+                                    or Color3.fromRGB(38, 38, 52) }):Play()
+        TweenService:Create(accent, TweenInfo.new(0.18),
+            { BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
+                                    or Color3.fromRGB(60, 60, 80) }):Play()
+    end
 
     bindButton(btn, function()
         flags[key] = not flags[key]
-        local on = flags[key]
-        status.Text = on and "ON" or "OFF"
-        status.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
-                                       or Color3.fromRGB(45, 45, 58)
-        status.TextColor3 = on and Color3.fromRGB(255, 255, 255)
-                                   or Color3.fromRGB(160, 160, 180)
-        accent.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
-                                       or Color3.fromRGB(70, 70, 90)
+        animate(flags[key])
+        if callback then callback() end
     end)
 end
 
@@ -234,8 +453,8 @@ local function sectionHeader(text)
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -8, 0, 22)
     lbl.BackgroundTransparency = 1
-    lbl.Text = text:upper()
-    lbl.TextColor3 = Color3.fromRGB(150, 90, 255)
+    lbl.Text = "— " .. text:upper() .. " —"
+    lbl.TextColor3 = Color3.fromRGB(160, 100, 255)
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 10
     lbl.TextXAlignment = Enum.TextXAlignment.Left
@@ -244,11 +463,40 @@ local function sectionHeader(text)
 end
 
 sectionHeader("Training")
-makeToggle("Fast Rep", "fastRep")
+makeToggle("Auto Lift", "autoLift")
+
+sectionHeader("Movement")
+makeToggle("Speed", "speed", applySpeed)
+makeToggle("Noclip", "noclip", applyNoclip)
+makeToggle("Infinite Jump", "infiniteJump")
+makeToggle("Fly", "fly", function()
+    if flags.fly then startFly() else stopFly() end
+end)
+makeToggle("Anti Fling", "antiFling")
+
+sectionHeader("Visual")
+makeToggle("Fullbright", "fullbright", applyLighting)
+makeToggle("No Fog", "noFog", applyLighting)
+makeToggle("FPS Boost", "fpsBoost", applyLighting)
+
 sectionHeader("Progress")
 makeToggle("Auto Rebirth", "autoRebirth")
-sectionHeader("Pets")
 makeToggle("Auto Buy Pet", "autoBuyPet")
+
+local expanded = true
+bindButton(minBtn, function()
+    expanded = not expanded
+    for _, child in ipairs(frame:GetChildren()) do
+        if child ~= header and child ~= stroke then
+            child.Visible = expanded
+        end
+    end
+    frame.Size = expanded and UDim2.fromOffset(320, 530)
+                          or UDim2.fromOffset(320, 74)
+    glow.Size  = expanded and UDim2.fromOffset(330, 540)
+                          or UDim2.fromOffset(330, 84)
+    minBtn.Text = expanded and "–" or "+"
+end)
 
 local dragging, dragStart, startPos
 header.InputBegan:Connect(function(input)
@@ -263,9 +511,13 @@ header.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
                      or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
+        local newPos = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        frame.Position = newPos
+        glow.Position = UDim2.new(
+            newPos.X.Scale, newPos.X.Offset - 5,
+            newPos.Y.Scale, newPos.Y.Offset - 5)
     end
 end)
 header.InputEnded:Connect(function(input)
@@ -275,4 +527,11 @@ header.InputEnded:Connect(function(input)
     end
 end)
 
-print("[ML] panel loaded")
+UserInputService.InputBegan:Connect(function(input, gp)
+    if gp then return end
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        gui.Enabled = not gui.Enabled
+    end
+end)
+
+print("[EAM] loaded")
