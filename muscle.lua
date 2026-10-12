@@ -1,4 +1,4 @@
-if game.PlaceId ~= 155615604 then
+if game.PlaceId ~= 3623096087 then
     warn("[ML] not in Muscle Legends")
     return
 end
@@ -13,7 +13,10 @@ local MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
 local rEvents = ReplicatedStorage:WaitForChild("rEvents", 10)
 
 if not MuscleEvent then
-    warn("[ML] MuscleEvent not found — are you in the game?")
+    warn("[ML] MuscleEvent not found — dumping player children:")
+    for _, v in ipairs(LocalPlayer:GetChildren()) do
+        print("  ", v.ClassName, v.Name)
+    end
     return
 end
 
@@ -70,6 +73,8 @@ if rEvents:FindFirstChild("rebirthRemote") then
             end
         end
     end)
+else
+    warn("[ML] rebirthRemote not found in rEvents")
 end
 
 if rEvents:FindFirstChild("openCrystalRemote") then
@@ -85,6 +90,8 @@ if rEvents:FindFirstChild("openCrystalRemote") then
             end
         end
     end)
+else
+    warn("[ML] openCrystalRemote not found in rEvents")
 end
 
 local gui = Instance.new("ScreenGui")
@@ -187,4 +194,4 @@ title.InputEnded:Connect(function(input)
     end
 end)
 
-print("[ML] own build loaded")
+print("[ML] own build loaded — PlaceId: " .. tostring(game.PlaceId))
