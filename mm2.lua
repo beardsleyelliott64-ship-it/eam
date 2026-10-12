@@ -1,10 +1,12 @@
 -- language: Lua, file: mm2.lua, target: Murder Mystery 2
--- own build. cooler UI, fly, coin teleport farm, hide toggle.
+-- own build. mobile-friendly. slow glide coin loop. fixed fly. cool UI.
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
 local UserInputService  = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TeleportService   = game:GetService("TeleportService")
+local Lighting          = game:GetService("Lighting")
 local LocalPlayer       = Players.LocalPlayer
 local Camera            = workspace.CurrentCamera
 
@@ -25,48 +27,94 @@ end
 local shootRemote = findRemote("Shoot")
 local stabRemote  = findRemote("Stab")
 local coinRemote  = findRemote("Coin")
-local dropRemote  = findRemote("Drop")
+local equipRemote = findRemote("Equip")
 
 print("[MM2] remotes — Stab:", stabRemote and "ok" or "MISS",
-      "Coin:", coinRemote and "ok" or "MISS")
+      "Coin:", coinRemote and "ok" or "MISS",
+      "Shoot:", shootRemote and "ok" or "MISS")
 
--- ── state ──────────────────────────────────────────────────────────────────
+-- ── flags ──────────────────────────────────────────────────────────────────
 local flags = {
     esp = false, speed = false, noclip = false, infiniteJump = false,
     killAll = false, autoShoot = false, autoStab = false,
-    autoFarm = false, fly = false, flySpeed = 100,
+    autoFarm = false, fly = false, flySpeed = 60,
+    antiFling = false, killAura = false,
+    bringGun = false, fpsBoost = false, rejoin = false,
 }
 
-local flyConnection, flyVelocity
-local espHighlights = {}
+local espTracked = {}
+local flyConn, flyVel
+local farmConn, farmVel, farmTarget
+local originalLighting = {}
 
 -- ── ESP ────────────────────────────────────────────────────────────────────
+local function removeESP(player)
+    local t = espTracked[player]
+    if not t then return end
+    if t.highlight and t.highlight.Parent then t.highlight:Destroy() end
+    if t.billboard and t.billboard.Parent then t.billboard:Destroy() end
+    espTracked[player] = nil
+end
+
 local function clearESP()
-    for _, h in pairs(espHighlights) do
-        if h and h.Parent then h:Destroy() end
+    for p, _ in pairs(espTracked) do removeESP(p) end
+    for _, o in ipairs(workspace:GetDescendants()) do
+        if o.Name == "MM2_ESP" or o.Name == "MM2_ESP_Label" then o:Destroy() end
     end
-    espHighlights = {}
+    espTracked = {}
+end
+
+local function getRole(player)
+    local rv = player:FindFirstChild("Role")
+        or (player.Character and player.Character:FindFirstChild("Role"))
+    return rv and rv.Value and tostring(rv.Value) or "Innocent"
 end
 
 local function applyESP(player)
     if player == LocalPlayer or not player.Character then return end
-    local roleVal = player:FindFirstChild("Role")
-        or (player.Character and player.Character:FindFirstChild("Role"))
-    local role = roleVal and tostring(roleVal.Value):lower() or "innocent"
+    local head = player.Character:FindFirstChild("Head")
+    if not head then return end
 
-    local color = Color3.fromRGB(50, 255, 50)
-    if role:find("murder") then color = Color3.fromRGB(255, 50, 50)
-    elseif role:find("sheriff") then color = Color3.fromRGB(50, 100, 255) end
+    local role = getRole(player):lower()
+    local fill, txt, txtCol
+    if role:find("murder") then
+        fill, txt, txtCol = Color3.fromRGB(255,60,60), "MURDERER", Color3.fromRGB(255,60,60)
+    elseif role:find("sheriff") then
+        fill, txt, txtCol = Color3.fromRGB(60,130,255), "SHERIFF", Color3.fromRGB(60,130,255)
+    else
+        fill, txt, txtCol = Color3.fromRGB(60,255,60), "INNOCENT", Color3.fromRGB(60,255,60)
+    end
 
-    if espHighlights[player] then espHighlights[player]:Destroy() end
+    removeESP(player)
+
     local h = Instance.new("Highlight")
+    h.Name = "MM2_ESP"
     h.Adornee = player.Character
     h.Parent = player.Character
-    h.FillColor = color
-    h.OutlineColor = Color3.new(1, 1, 1)
-    h.FillTransparency = 0.5
+    h.FillColor = fill
+    h.OutlineColor = Color3.new(1,1,1)
+    h.FillTransparency = 0.55
     h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    espHighlights[player] = h
+
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "MM2_ESP_Label"
+    bb.Size = UDim2.fromOffset(130, 22)
+    bb.StudsOffset = Vector3.new(0, 3, 0)
+    bb.AlwaysOnTop = true
+    bb.Adornee = head
+    bb.Parent = head
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.fromScale(1,1)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = txt
+    lbl.TextColor3 = txtCol
+    lbl.TextStrokeTransparency = 0
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextScaled = true
+    lbl.Parent = bb
+
+    espTracked[player] = { highlight = h, billboard = bb }
 end
 
 -- ── movement ───────────────────────────────────────────────────────────────
@@ -97,8 +145,8 @@ end)
 
 -- ── fly ────────────────────────────────────────────────────────────────────
 local function stopFly()
-    if flyConnection then flyConnection:Disconnect() flyConnection = nil end
-    if flyVelocity then flyVelocity:Destroy() flyVelocity = nil end
+    if flyConn then flyConn:Disconnect() flyConn = nil end
+    if flyVel then flyVel:Destroy() flyVel = nil end
     local c = LocalPlayer.Character
     if c then
         local h = c:FindFirstChildOfClass("Humanoid")
@@ -115,13 +163,14 @@ local function startFly()
     if not hrp or not h then return end
 
     h.PlatformStand = true
-    flyVelocity = Instance.new("BodyVelocity")
-    flyVelocity.MaxForce = Vector3.new(9e9, 9e9, 9e9)
-    flyVelocity.Velocity = Vector3.zero
-    flyVelocity.Parent = hrp
+    flyVel = Instance.new("BodyVelocity")
+    flyVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    flyVel.Velocity = Vector3.zero
+    flyVel.Parent = hrp
 
-    flyConnection = RunService.RenderStepped:Connect(function()
+    flyConn = RunService.RenderStepped:Connect(function()
         if not flags.fly then stopFly() return end
+        if not flyVel or not flyVel.Parent then return end
         local dir = Vector3.zero
         local cam = Camera.CFrame
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then dir += cam.LookVector end
@@ -129,14 +178,17 @@ local function startFly()
         if UserInputService:IsKeyDown(Enum.KeyCode.A) then dir -= cam.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then dir += cam.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0,1,0) end
-        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then dir -= Vector3.new(0,1,0) end
-        flyVelocity.Velocity = dir.Magnitude > 0
+        if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl)
+           or UserInputService:IsKeyDown(Enum.KeyCode.LeftShift) then
+            dir -= Vector3.new(0,1,0)
+        end
+        flyVel.Velocity = dir.Magnitude > 0
             and dir.Unit * flags.flySpeed
             or Vector3.zero
     end)
 end
 
--- ── role ───────────────────────────────────────────────────────────────────
+-- ── roles ──────────────────────────────────────────────────────────────────
 local function getMyRole()
     local r = LocalPlayer:FindFirstChild("Role")
         or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Role"))
@@ -163,14 +215,10 @@ end
 local function autoShoot()
     if not shootRemote or not isSheriff() then return end
     for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local rv = p:FindFirstChild("Role")
-                or (p.Character and p.Character:FindFirstChild("Role"))
-            local role = rv and tostring(rv.Value):lower() or ""
-            if role:find("murder") then
-                local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-                if hrp then pcall(function() shootRemote:FireServer(hrp) end) end
-            end
+        if p ~= LocalPlayer and p.Character
+           and getRole(p):lower():find("murder") then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then pcall(function() shootRemote:FireServer(hrp) end) end
         end
     end
 end
@@ -192,13 +240,75 @@ local function autoStab()
     end
 end
 
--- ── coin farm: fly + teleport to each coin ─────────────────────────────────
-local farmConnection
+local function killAura()
+    if not stabRemote then return end
+    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local h = p.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and h and h.Health > 0
+               and (hrp.Position - myHrp.Position).Magnitude < 8 then
+                pcall(function() stabRemote:FireServer(hrp) end)
+                pcall(function() stabRemote:FireServer(p) end)
+            end
+        end
+    end
+end
+
+local function bringGun()
+    if not equipRemote then return end
+    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Name:lower():find("gun") then
+            local dist = (obj.Position - myHrp.Position).Magnitude
+            if dist < 15 and not obj:IsDescendantOf(LocalPlayer.Character) then
+                pcall(function() equipRemote:FireServer(obj) end)
+                pcall(function() equipRemote:FireServer(obj.Name) end)
+            end
+        end
+    end
+end
+
+-- ── anti-fling ─────────────────────────────────────────────────────────────
+RunService.Heartbeat:Connect(function()
+    if not flags.antiFling then return end
+    local c = LocalPlayer.Character
+    if not c then return end
+    local hrp = c:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local v = hrp.AssemblyLinearVelocity
+        hrp.AssemblyLinearVelocity = Vector3.new(
+            math.clamp(v.X, -50, 50),
+            math.clamp(v.Y, -50, 50),
+            math.clamp(v.Z, -50, 50))
+    end
+end)
+
+-- ── coin farm ──────────────────────────────────────────────────────────────
+local function findNearestCoin(origin)
+    local nearest, best = nil, math.huge
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and obj.Name:lower():find("coin")
+           and obj.Transparency < 1 and obj.Parent then
+            local d = (obj.Position - origin).Magnitude
+            if d < best then nearest = obj best = d end
+        end
+    end
+    return nearest
+end
 
 local function stopFarm()
-    if farmConnection then farmConnection:Disconnect() farmConnection = nil end
-    stopFly()
-    flags.fly = false
+    if farmConn then farmConn:Disconnect() farmConn = nil end
+    if farmVel then farmVel:Destroy() farmVel = nil end
+    farmTarget = nil
+    local c = LocalPlayer.Character
+    if c then
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if h then h.PlatformStand = false end
+    end
 end
 
 local function startFarm()
@@ -212,48 +322,83 @@ local function startFarm()
     h.PlatformStand = true
     flags.noclip = true
 
-    farmConnection = RunService.Heartbeat:Connect(function()
+    farmVel = Instance.new("BodyVelocity")
+    farmVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    farmVel.Velocity = Vector3.zero
+    farmVel.Parent = hrp
+
+    farmConn = RunService.Heartbeat:Connect(function()
         if not flags.autoFarm then stopFarm() return end
         if not LocalPlayer.Character then return end
         local myHrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not myHrp then return end
+        if not myHrp or not farmVel or not farmVel.Parent then return end
 
-        -- find nearest coin
-        local nearest, nearestDist = nil, math.huge
-        for _, obj in ipairs(workspace:GetDescendants()) do
-            if obj:IsA("BasePart")
-               and (obj.Name == "Coin" or obj.Name:lower():find("coin")) then
-                local d = (obj.Position - myHrp.Position).Magnitude
-                if d < nearestDist then
-                    nearest = obj
-                    nearestDist = d
-                end
-            end
+        if not farmTarget or not farmTarget.Parent
+           or farmTarget.Transparency >= 1 then
+            farmTarget = findNearestCoin(myHrp.Position)
         end
 
-        if nearest then
-            myHrp.CFrame = CFrame.new(nearest.Position)
-            if coinRemote then
-                pcall(function() coinRemote:FireServer(nearest) end)
-                pcall(function() coinRemote:FireServer(nearest.Position) end)
+        if farmTarget then
+            local dist = (farmTarget.Position - myHrp.Position).Magnitude
+            if dist < 4 then
+                if coinRemote then
+                    pcall(function() coinRemote:FireServer(farmTarget) end)
+                    pcall(function() coinRemote:FireServer(farmTarget.Position) end)
+                end
+                farmVel.Velocity = Vector3.zero
+                farmTarget = nil
+            else
+                local dir = (farmTarget.Position - myHrp.Position).Unit
+                farmVel.Velocity = dir * 45
             end
         else
-            -- no coin nearby: fly straight up and let the next scan catch one
-            myHrp.Velocity = Vector3.new(0, 50, 0)
+            farmVel.Velocity = Vector3.zero
         end
     end)
 end
 
--- ── main loop ──────────────────────────────────────────────────────────────
+-- ── fps boost ──────────────────────────────────────────────────────────────
+local function applyFPSBoost(on)
+    if on then
+        originalLighting.GlobalShadows = Lighting.GlobalShadows
+        originalLighting.FogEnd = Lighting.FogEnd
+        originalLighting.Brightness = Lighting.Brightness
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 1e6
+        Lighting.Brightness = 0
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("Atmosphere") or v:IsA("Sky") then
+                v.Enabled = false
+            end
+        end
+    else
+        if originalLighting.GlobalShadows ~= nil then
+            Lighting.GlobalShadows = originalLighting.GlobalShadows
+            Lighting.FogEnd = originalLighting.FogEnd
+            Lighting.Brightness = originalLighting.Brightness
+        end
+        for _, v in ipairs(Lighting:GetChildren()) do
+            if v:IsA("PostEffect") or v:IsA("Atmosphere") or v:IsA("Sky") then
+                v.Enabled = true
+            end
+        end
+    end
+end
+
+-- ── loop ───────────────────────────────────────────────────────────────────
 RunService.Heartbeat:Connect(function()
     if flags.esp then
-        for _, p in ipairs(Players:GetPlayers()) do applyESP(p) end
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then applyESP(p) end
+        end
     end
     if flags.speed then applySpeed() end
     if flags.noclip then applyNoclip() end
     if flags.killAll then killAll() end
     if flags.autoShoot then autoShoot() end
     if flags.autoStab then autoStab() end
+    if flags.killAura then killAura() end
+    if flags.bringGun then bringGun() end
 end)
 
 -- ── UI ─────────────────────────────────────────────────────────────────────
@@ -261,78 +406,115 @@ local gui = Instance.new("ScreenGui")
 gui.Name = "MM2Own"
 gui.ResetOnSpawn = false
 gui.IgnoreGuiInset = true
+gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
--- animated gradient border frame
+local shadow = Instance.new("Frame")
+shadow.Size = UDim2.fromOffset(300, 500)
+shadow.Position = UDim2.new(0.5, -148, 0, 92)
+shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+shadow.BackgroundTransparency = 0.5
+shadow.BorderSizePixel = 0
+shadow.ZIndex = 1
+shadow.Parent = gui
+Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 18)
+
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(280, 460)
-frame.Position = UDim2.fromOffset(20, 60)
-frame.BackgroundColor3 = Color3.fromRGB(16, 16, 22)
+frame.Size = UDim2.fromOffset(300, 500)
+frame.Position = UDim2.new(0.5, -150, 0, 90)
+frame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
 frame.BorderSizePixel = 0
+frame.ZIndex = 2
 frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 12)
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 16)
 
 local stroke = Instance.new("UIStroke")
 stroke.Thickness = 1.5
-stroke.Color = Color3.fromRGB(120, 90, 255)
-stroke.Transparency = 0.2
+stroke.Color = Color3.fromRGB(150, 90, 255)
+stroke.Transparency = 0
 stroke.Parent = frame
 
-local gradient = Instance.new("UIGradient")
-gradient.Color = ColorSequence.new{
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(120, 90, 255)),
-    ColorSequenceKeypoint.new(0.5, Color3.fromRGB(255, 90, 180)),
-    ColorSequenceKeypoint.new(1, Color3.fromRGB(90, 200, 255)),
+local strokeGrad = Instance.new("UIGradient")
+strokeGrad.Color = ColorSequence.new{
+    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 80, 200)),
+    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(150, 90, 255)),
+    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(80, 200, 255)),
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 80, 200)),
 }
-gradient.Rotation = 45
-gradient.Parent = stroke
+strokeGrad.Rotation = 0
+strokeGrad.Parent = stroke
 
--- title bar
+task.spawn(function()
+    while strokeGrad.Parent do
+        strokeGrad.Rotation = (strokeGrad.Rotation + 1) % 360
+        task.wait(0.03)
+    end
+end)
+
+local header = Instance.new("Frame")
+header.Size = UDim2.new(1, 0, 0, 56)
+header.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+header.BorderSizePixel = 0
+header.ZIndex = 3
+header.Parent = frame
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
+
+local headerCover = Instance.new("Frame")
+headerCover.Size = UDim2.new(1, 0, 0, 22)
+headerCover.Position = UDim2.new(0, 0, 1, -22)
+headerCover.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+headerCover.BorderSizePixel = 0
+headerCover.ZIndex = 3
+headerCover.Parent = header
+
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -60, 0, 40)
-title.Position = UDim2.fromOffset(16, 0)
+title.Size = UDim2.new(1, -80, 0, 26)
+title.Position = UDim2.fromOffset(18, 8)
 title.BackgroundTransparency = 1
 title.Text = "MM2"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBlack
-title.TextSize = 20
+title.TextSize = 22
 title.TextXAlignment = Enum.TextXAlignment.Left
-title.Parent = frame
+title.ZIndex = 4
+title.Parent = header
 
 local subtitle = Instance.new("TextLabel")
-subtitle.Size = UDim2.new(1, -60, 0, 14)
-subtitle.Position = UDim2.fromOffset(16, 20)
+subtitle.Size = UDim2.new(1, -80, 0, 14)
+subtitle.Position = UDim2.fromOffset(18, 32)
 subtitle.BackgroundTransparency = 1
 subtitle.Text = "own build"
-subtitle.TextColor3 = Color3.fromRGB(140, 140, 160)
-subtitle.Font = Enum.Font.Gotham
-subtitle.TextSize = 10
+subtitle.TextColor3 = Color3.fromRGB(140, 140, 170)
+subtitle.Font = Enum.Font.GothamMedium
+subtitle.TextSize = 11
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
-subtitle.Parent = frame
+subtitle.ZIndex = 4
+subtitle.Parent = header
 
--- minimise button
 local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.fromOffset(28, 28)
-minBtn.Position = UDim2.new(1, -40, 0, 8)
-minBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 45)
+minBtn.Size = UDim2.fromOffset(36, 36)
+minBtn.Position = UDim2.new(1, -46, 0, 10)
+minBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
 minBtn.BorderSizePixel = 0
 minBtn.Text = "–"
-minBtn.TextColor3 = Color3.fromRGB(200, 200, 220)
+minBtn.TextColor3 = Color3.fromRGB(220, 220, 235)
 minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = 18
-minBtn.Parent = frame
-Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 6)
+minBtn.TextSize = 22
+minBtn.ZIndex = 4
+minBtn.Parent = header
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
 
--- scroll container for toggles
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -24, 1, -70)
-scroll.Position = UDim2.fromOffset(12, 60)
+scroll.Size = UDim2.new(1, -20, 1, -70)
+scroll.Position = UDim2.fromOffset(10, 62)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
-scroll.ScrollBarThickness = 4
-scroll.ScrollBarImageColor3 = Color3.fromRGB(120, 90, 255)
+scroll.ScrollBarThickness = 3
+scroll.ScrollBarImageColor3 = Color3.fromRGB(150, 90, 255)
+scroll.ScrollBarImageTransparency = 0.2
 scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+scroll.ZIndex = 3
 scroll.Parent = frame
 
 local layout = Instance.new("UIListLayout")
@@ -340,144 +522,193 @@ layout.Padding = UDim.new(0, 8)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = scroll
 
--- minimise behaviour
-local visible = true
-minBtn.MouseButton1Click:Connect(function()
-    visible = not visible
+local expanded = true
+local function toggleMinimise()
+    expanded = not expanded
     for _, child in ipairs(frame:GetChildren()) do
-        if child ~= title and child ~= subtitle and child ~= minBtn
-           and child ~= stroke and child ~= gradient then
-            child.Visible = visible
+        if child ~= header and child ~= stroke and child ~= strokeGrad then
+            child.Visible = expanded
         end
     end
-    frame.Size = visible and UDim2.fromOffset(280, 460)
-                          or UDim2.fromOffset(280, 48)
-    minBtn.Text = visible and "–" or "+"
+    frame.Size = expanded and UDim2.fromOffset(300, 500)
+                          or UDim2.fromOffset(300, 56)
+    shadow.Size = frame.Size
+    minBtn.Text = expanded and "–" or "+"
+end
+minBtn.MouseButton1Click:Connect(toggleMinimise)
+minBtn.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch then toggleMinimise() end
 end)
 
--- toggle factory
 local function makeToggle(labelText, key, callback)
     local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -8, 0, 36)
-    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    btn.Size = UDim2.new(1, -8, 0, 38)
+    btn.BackgroundColor3 = Color3.fromRGB(24, 24, 34)
     btn.BorderSizePixel = 0
     btn.Text = ""
     btn.AutoButtonColor = false
+    btn.ZIndex = 4
     btn.Parent = scroll
-    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 8)
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
-    local accent = Instance.new("Frame")
-    accent.Size = UDim2.new(0, 4, 1, -12)
-    accent.Position = UDim2.fromOffset(6, 6)
-    accent.BackgroundColor3 = Color3.fromRGB(120, 90, 255)
-    accent.BorderSizePixel = 0
-    accent.Parent = btn
-    Instance.new("UICorner", accent).CornerRadius = UDim.new(0, 2)
+    local leftAccent = Instance.new("Frame")
+    leftAccent.Size = UDim2.new(0, 3, 1, -14)
+    leftAccent.Position = UDim2.fromOffset(8, 7)
+    leftAccent.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+    leftAccent.BorderSizePixel = 0
+    leftAccent.ZIndex = 5
+    leftAccent.Parent = btn
+    Instance.new("UICorner", leftAccent).CornerRadius = UDim.new(0, 2)
 
     local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1, -70, 1, 0)
-    label.Position = UDim2.fromOffset(20, 0)
+    label.Size = UDim2.new(1, -90, 1, 0)
+    label.Position = UDim2.fromOffset(22, 0)
     label.BackgroundTransparency = 1
     label.Text = labelText
     label.TextColor3 = Color3.fromRGB(220, 220, 235)
     label.Font = Enum.Font.GothamMedium
     label.TextSize = 13
     label.TextXAlignment = Enum.TextXAlignment.Left
+    label.ZIndex = 5
     label.Parent = btn
 
     local status = Instance.new("TextLabel")
-    status.Size = UDim2.fromOffset(50, 20)
-    status.Position = UDim2.new(1, -58, 0.5, -10)
-    status.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+    status.Size = UDim2.fromOffset(52, 22)
+    status.Position = UDim2.new(1, -60, 0.5, -11)
+    status.BackgroundColor3 = Color3.fromRGB(45, 45, 58)
     status.BorderSizePixel = 0
     status.Text = "OFF"
     status.TextColor3 = Color3.fromRGB(160, 160, 180)
     status.Font = Enum.Font.GothamBold
     status.TextSize = 11
+    status.ZIndex = 5
     status.Parent = btn
-    Instance.new("UICorner", status).CornerRadius = UDim.new(0, 4)
+    Instance.new("UICorner", status).CornerRadius = UDim.new(0, 5)
 
-    btn.MouseButton1Click:Connect(function()
+    local lastFire = 0
+    local function fire()
+        local now = tick()
+        if now - lastFire < 0.3 then return end
+        lastFire = now
         flags[key] = not flags[key]
         local on = flags[key]
         status.Text = on and "ON" or "OFF"
-        status.BackgroundColor3 = on
-            and Color3.fromRGB(120, 90, 255)
-            or Color3.fromRGB(45, 45, 55)
-        status.TextColor3 = on
-            and Color3.fromRGB(255, 255, 255)
-            or Color3.fromRGB(160, 160, 180)
-        accent.BackgroundColor3 = on
-            and Color3.fromRGB(120, 90, 255)
-            or Color3.fromRGB(60, 60, 75)
+        status.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
+                                       or Color3.fromRGB(45, 45, 58)
+        status.TextColor3 = on and Color3.fromRGB(255, 255, 255)
+                                   or Color3.fromRGB(160, 160, 180)
+        leftAccent.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
+                                          or Color3.fromRGB(70, 70, 90)
         if callback then callback() end
+    end
+
+    btn.MouseButton1Click:Connect(fire)
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then fire() end
     end)
-    return btn
 end
 
--- section header helper
 local function sectionHeader(text)
     local lbl = Instance.new("TextLabel")
     lbl.Size = UDim2.new(1, -8, 0, 22)
     lbl.BackgroundTransparency = 1
     lbl.Text = text:upper()
-    lbl.TextColor3 = Color3.fromRGB(120, 90, 255)
+    lbl.TextColor3 = Color3.fromRGB(150, 90, 255)
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 10
     lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.ZIndex = 4
     lbl.Parent = scroll
 end
 
 sectionHeader("Visual")
-makeToggle("ESP",            "esp",          nil)
+makeToggle("ESP", "esp", function()
+    if flags.esp then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer then applyESP(p) end
+        end
+    else
+        clearESP()
+    end
+end)
+makeToggle("FPS Boost", "fpsBoost", function()
+    applyFPSBoost(flags.fpsBoost)
+end)
+
 sectionHeader("Movement")
-makeToggle("Speed",          "speed",        applySpeed)
-makeToggle("Noclip",         "noclip",       applyNoclip)
-makeToggle("Infinite Jump",  "infiniteJump", nil)
-makeToggle("Fly",            "fly",          function()
+makeToggle("Speed", "speed", applySpeed)
+makeToggle("Noclip", "noclip", applyNoclip)
+makeToggle("Infinite Jump", "infiniteJump", nil)
+makeToggle("Fly", "fly", function()
     if flags.fly then startFly() else stopFly() end
 end)
+makeToggle("Anti Fling", "antiFling", nil)
+
 sectionHeader("Combat")
-makeToggle("Kill All",       "killAll",      nil)
-makeToggle("Auto Shoot",     "autoShoot",    nil)
-makeToggle("Auto Stab",      "autoStab",     nil)
+makeToggle("Bring Gun", "bringGun", nil)
+makeToggle("Kill All", "killAll", nil)
+makeToggle("Kill Aura", "killAura", nil)
+makeToggle("Auto Shoot", "autoShoot", nil)
+makeToggle("Auto Stab", "autoStab", nil)
+
 sectionHeader("Economy")
-makeToggle("Auto Farm Coins","autoFarm",     function()
+makeToggle("Auto Farm Coins", "autoFarm", function()
     if flags.autoFarm then startFarm() else stopFarm() end
 end)
 
--- drag
+sectionHeader("Misc")
+makeToggle("Rejoin", "rejoin", function()
+    if not flags.rejoin then return end
+    flags.rejoin = false
+    local ok = pcall(function()
+        TeleportService:TeleportToPlaceInstance(
+            game.PlaceId, game.JobId, LocalPlayer)
+    end)
+    if not ok then
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end
+end)
+
 local dragging, dragStart, startPos
-title.InputBegan:Connect(function(input)
+local function beginDrag(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
        or input.UserInputType == Enum.UserInputType.Touch then
         dragging = true
         dragStart = input.Position
         startPos = frame.Position
     end
-end)
-title.InputChanged:Connect(function(input)
+end
+local function updateDrag(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
                      or input.UserInputType == Enum.UserInputType.Touch) then
         local delta = input.Position - dragStart
-        frame.Position = UDim2.new(
+        local newPos = UDim2.new(
             startPos.X.Scale, startPos.X.Offset + delta.X,
             startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        frame.Position = newPos
+        shadow.Position = UDim2.new(
+            newPos.X.Scale, newPos.X.Offset + 2,
+            newPos.Y.Scale, newPos.Y.Offset + 2)
     end
-end)
-title.InputEnded:Connect(function(input)
+end
+local function endDrag(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
        or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
-end)
+end
+header.InputBegan:Connect(beginDrag)
+header.InputChanged:Connect(updateDrag)
+header.InputEnded:Connect(endDrag)
 
--- keybind: right shift toggles whole UI
-UserInputService.InputBegan:Connect(function(input, gp)
-    if gp then return end
-    if input.KeyCode == Enum.KeyCode.RightShift then
-        gui.Enabled = not gui.Enabled
+Players.PlayerAdded:Connect(function(p)
+    if flags.esp then
+        p.CharacterAdded:Connect(function()
+            task.wait(0.5)
+            applyESP(p)
+        end)
     end
 end)
+Players.PlayerRemoving:Connect(removeESP)
 
 print("[MM2] own build loaded")
