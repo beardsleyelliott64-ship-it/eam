@@ -1,69 +1,58 @@
-if game.PlaceId ~= 3623096087 then
-    warn("[ML] not in Muscle Legends")
-    return
-end
-
 local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer       = Players.LocalPlayer
 
-local MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-    or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("MuscleEvent"))
-
-local rEvents = ReplicatedStorage:WaitForChild("rEvents", 10)
-
-if not MuscleEvent then
-    warn("[ML] MuscleEvent not found — dumping player children:")
-    for _, v in ipairs(LocalPlayer:GetChildren()) do
-        print("  ", v.ClassName, v.Name)
+local function deepFind(root, name)
+    if not root then return nil end
+    for _, v in ipairs(root:GetDescendants()) do
+        if v.Name == name then return v end
     end
-    return
+    return nil
 end
 
-if not rEvents then
-    warn("[ML] rEvents folder not found")
+local MuscleEvent =
+    LocalPlayer:FindFirstChild("MuscleEvent")
+    or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("MuscleEvent"))
+    or deepFind(LocalPlayer, "MuscleEvent")
+    or deepFind(LocalPlayer.Character or workspace, "MuscleEvent")
+    or deepFind(workspace, "MuscleEvent")
+
+if not MuscleEvent then
+    warn("[ML] MuscleEvent not found anywhere")
     return
+end
+print("[ML] MuscleEvent at:", MuscleEvent:GetFullName())
+
+local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
+local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
+if petshopRemote then
+    print("[ML] cPetshopRemote found")
+else
+    warn("[ML] cPetshopRemote not found — auto-buy disabled")
 end
 
 local flags = {
     fastRep      = false,
     autoRebirth  = false,
-    autoCrystal  = false,
-    crystalType  = "Blue Crystal",
+    autoBuyPet   = false,
+    petName      = "Green Aura",
     repDelay     = 0.05,
     rebirthDelay = 5,
-    crystalDelay = 1,
-}
-
-local rocks = {
-    "Rock", "Magma Rock", "Legendary Rock",
-    "Eternal Rock", "Mythical Rock"
+    petDelay     = 1,
 }
 
 local function firePunch()
     pcall(function() MuscleEvent:FireServer("punch", "leftHand") end)
     pcall(function() MuscleEvent:FireServer("punch", "rightHand") end)
-
-    local machines = workspace:FindFirstChild("Machines")
-    if machines then
-        for _, name in ipairs(rocks) do
-            local rock = machines:FindFirstChild(name)
-            if rock then
-                pcall(function() MuscleEvent:FireServer("punch", rock) end)
-            end
-        end
-    end
 end
 
 task.spawn(function()
     while task.wait(flags.repDelay) do
-        if flags.fastRep then
-            firePunch()
-        end
+        if flags.fastRep then firePunch() end
     end
 end)
 
-if rEvents:FindFirstChild("rebirthRemote") then
+if rEvents and rEvents:FindFirstChild("rebirthRemote") then
     task.spawn(function()
         while task.wait(flags.rebirthDelay) do
             if flags.autoRebirth then
@@ -73,25 +62,18 @@ if rEvents:FindFirstChild("rebirthRemote") then
             end
         end
     end)
-else
-    warn("[ML] rebirthRemote not found in rEvents")
 end
 
-if rEvents:FindFirstChild("openCrystalRemote") then
+if petshopRemote then
     task.spawn(function()
-        while task.wait(flags.crystalDelay) do
-            if flags.autoCrystal then
+        while task.wait(flags.petDelay) do
+            if flags.autoBuyPet then
                 pcall(function()
-                    rEvents.openCrystalRemote:InvokeServer(
-                        "openCrystalRequest",
-                        flags.crystalType
-                    )
+                    petshopRemote:InvokeServer(flags.petName)
                 end)
             end
         end
     end)
-else
-    warn("[ML] openCrystalRemote not found in rEvents")
 end
 
 local gui = Instance.new("ScreenGui")
@@ -141,31 +123,30 @@ end
 
 makeToggle("Fast Rep",     "fastRep",     40)
 makeToggle("Auto Rebirth", "autoRebirth", 80)
-makeToggle("Auto Crystal", "autoCrystal", 120)
+makeToggle("Auto Buy Pet", "autoBuyPet",  120)
 
-local crystalBtn = Instance.new("TextButton")
-crystalBtn.Size = UDim2.new(1, -24, 0, 32)
-crystalBtn.Position = UDim2.new(0, 12, 0, 160)
-crystalBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-crystalBtn.BorderSizePixel = 0
-crystalBtn.Text = "Crystal: " .. flags.crystalType
-crystalBtn.TextColor3 = Color3.fromRGB(200, 200, 210)
-crystalBtn.Font = Enum.Font.Gotham
-crystalBtn.TextSize = 12
-crystalBtn.Parent = frame
-Instance.new("UICorner", crystalBtn).CornerRadius = UDim.new(0, 6)
+local petBtn = Instance.new("TextButton")
+petBtn.Size = UDim2.new(1, -24, 0, 32)
+petBtn.Position = UDim2.new(0, 12, 0, 160)
+petBtn.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+petBtn.BorderSizePixel = 0
+petBtn.Text = "Pet: " .. flags.petName
+petBtn.TextColor3 = Color3.fromRGB(200, 200, 210)
+petBtn.Font = Enum.Font.Gotham
+petBtn.TextSize = 12
+petBtn.Parent = frame
+Instance.new("UICorner", petBtn).CornerRadius = UDim.new(0, 6)
 
-local crystalCycle = {
-    "Blue Crystal", "Green Crystal", "Mythical Crystal",
-    "Frost Crystal", "Inferno Crystal", "Legends Crystal",
-    "Muscle Elite Crystal"
+local petCycle = {
+    "Green Aura", "Blue Aura", "Red Aura", "Purple Aura",
+    "Gold Aura", "Rainbow Aura", "Legendary Aura"
 }
-local crystalIndex = 1
+local petIndex = 1
 
-crystalBtn.MouseButton1Click:Connect(function()
-    crystalIndex = crystalIndex % #crystalCycle + 1
-    flags.crystalType = crystalCycle[crystalIndex]
-    crystalBtn.Text = "Crystal: " .. flags.crystalType
+petBtn.MouseButton1Click:Connect(function()
+    petIndex = petIndex % #petCycle + 1
+    flags.petName = petCycle[petIndex]
+    petBtn.Text = "Pet: " .. flags.petName
 end)
 
 local dragging, dragStart, startPos
@@ -194,4 +175,20 @@ title.InputEnded:Connect(function(input)
     end
 end)
 
-print("[ML] own build loaded — PlaceId: " .. tostring(game.PlaceId))
+print("[ML] loaded — MuscleEvent at " .. MuscleEvent:GetFullName())
+
+-- ── debug dump ──────────────────────────────────────────────────────────────
+local pg = game.Players.LocalPlayer:WaitForChild("PlayerGui")
+print("MLOwn exists:", pg:FindFirstChild("MLOwn") ~= nil)
+local g = pg:FindFirstChild("MLOwn")
+if g then
+    local f = g:FindFirstChild("Frame")
+    print("frame exists:", f ~= nil)
+    if f then
+        print("frame visible:", f.Visible)
+        print("frame position:", tostring(f.Position))
+        print("frame size:", tostring(f.Size))
+    end
+    print("screengui enabled:", g.Enabled)
+end
+print("viewport:", tostring(workspace.CurrentCamera.ViewportSize))
