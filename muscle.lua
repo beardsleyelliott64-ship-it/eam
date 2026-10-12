@@ -1,5 +1,5 @@
 -- language: Lua, file: muscle.lua, target: Pumpkin Muscle Legends
--- EAM menu. auto lift on equipped tool. no guessing.
+-- EAM v2. Auto Lift gated. rebuilt UI. right-shift hides.
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -8,17 +8,6 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TweenService      = game:GetService("TweenService")
 local LocalPlayer       = Players.LocalPlayer
 local Camera            = workspace.CurrentCamera
-
-local MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-task.spawn(function()
-    while not MuscleEvent do
-        MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-        if not MuscleEvent and LocalPlayer.Character then
-            MuscleEvent = LocalPlayer.Character:FindFirstChild("MuscleEvent")
-        end
-        task.wait(1)
-    end
-end)
 
 local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
 local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
@@ -38,13 +27,12 @@ local flags = {
     fullbright   = false,
     noFog        = false,
     fpsBoost     = false,
-    hideGui      = false,
     rebirthDelay = 5,
     petDelay     = 1,
 }
 
--- ── auto lift ──────────────────────────────────────────────────────────────
-local function findWeightTool()
+-- ── auto lift (gated) ──────────────────────────────────────────────────────
+local function findTool()
     local c = LocalPlayer.Character
     if c then
         for _, t in ipairs(c:GetChildren()) do
@@ -62,8 +50,8 @@ end
 
 task.spawn(function()
     while task.wait(flags.liftDelay) do
-        if flags.autoLift then
-            local tool = findWeightTool()
+        if flags.autoLift then          -- gate check
+            local tool = findTool()
             if tool then
                 pcall(function() tool:Activate() end)
             end
@@ -224,50 +212,52 @@ gui.IgnoreGuiInset = true
 gui.DisplayOrder = 999
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
+-- soft outer glow
 local glow = Instance.new("Frame")
-glow.Size = UDim2.fromOffset(330, 540)
-glow.Position = UDim2.new(0.5, -165, 0, 40)
-glow.BackgroundColor3 = Color3.fromRGB(140, 80, 255)
-glow.BackgroundTransparency = 0.88
+glow.Size = UDim2.fromOffset(340, 520)
+glow.Position = UDim2.new(0.5, -170, 0, 40)
+glow.BackgroundColor3 = Color3.fromRGB(120, 70, 255)
+glow.BackgroundTransparency = 0.86
 glow.BorderSizePixel = 0
 glow.ZIndex = 1
 glow.Parent = gui
-Instance.new("UICorner", glow).CornerRadius = UDim.new(0, 26)
+Instance.new("UICorner", glow).CornerRadius = UDim.new(0, 30)
 
+-- main panel
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(320, 530)
-frame.Position = UDim2.new(0.5, -160, 0, 46)
-frame.BackgroundColor3 = Color3.fromRGB(8, 8, 14)
+frame.Size = UDim2.fromOffset(330, 510)
+frame.Position = UDim2.new(0.5, -165, 0, 46)
+frame.BackgroundColor3 = Color3.fromRGB(10, 10, 18)
 frame.BorderSizePixel = 0
 frame.ZIndex = 2
 frame.Parent = gui
 Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 22)
 
+-- gradient stroke
 local stroke = Instance.new("UIStroke")
-stroke.Thickness = 1.2
+stroke.Thickness = 1
 stroke.Color = Color3.fromRGB(160, 100, 255)
 stroke.Parent = frame
 
 local strokeGrad = Instance.new("UIGradient")
 strokeGrad.Color = ColorSequence.new{
     ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 80, 200)),
-    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(150, 90, 255)),
-    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(80, 200, 255)),
-    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 80, 200)),
+    ColorSequenceKeypoint.new(0.50, Color3.fromRGB(150, 90, 255)),
+    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(80, 200, 255)),
 }
 strokeGrad.Parent = stroke
 
 task.spawn(function()
     while strokeGrad.Parent do
-        strokeGrad.Rotation = (strokeGrad.Rotation + 1.2) % 360
+        strokeGrad.Rotation = (strokeGrad.Rotation + 1) % 360
         task.wait(0.03)
     end
 end)
 
 -- header
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 74)
-header.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
+header.Size = UDim2.new(1, 0, 0, 80)
+header.BackgroundColor3 = Color3.fromRGB(16, 16, 26)
 header.BorderSizePixel = 0
 header.ZIndex = 3
 header.Parent = frame
@@ -276,15 +266,15 @@ Instance.new("UICorner", header).CornerRadius = UDim.new(0, 22)
 local headerCover = Instance.new("Frame")
 headerCover.Size = UDim2.new(1, 0, 0, 28)
 headerCover.Position = UDim2.new(0, 0, 1, -28)
-headerCover.BackgroundColor3 = Color3.fromRGB(14, 14, 22)
+headerCover.BackgroundColor3 = Color3.fromRGB(16, 16, 26)
 headerCover.BorderSizePixel = 0
 headerCover.ZIndex = 3
 headerCover.Parent = header
 
--- EAM badge with gradient
+-- EAM badge with gradient + glow
 local badge = Instance.new("Frame")
-badge.Size = UDim2.fromOffset(50, 50)
-badge.Position = UDim2.fromOffset(14, 12)
+badge.Size = UDim2.fromOffset(52, 52)
+badge.Position = UDim2.fromOffset(16, 14)
 badge.BackgroundColor3 = Color3.fromRGB(150, 90, 255)
 badge.BorderSizePixel = 0
 badge.ZIndex = 4
@@ -293,7 +283,7 @@ Instance.new("UICorner", badge).CornerRadius = UDim.new(0, 14)
 
 local badgeGrad = Instance.new("UIGradient")
 badgeGrad.Color = ColorSequence.new{
-    ColorSequenceKeypoint.new(0, Color3.fromRGB(220, 70, 255)),
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(230, 70, 255)),
     ColorSequenceKeypoint.new(0.5, Color3.fromRGB(150, 90, 255)),
     ColorSequenceKeypoint.new(1, Color3.fromRGB(70, 160, 255)),
 }
@@ -311,22 +301,22 @@ badgeText.ZIndex = 5
 badgeText.Parent = badge
 
 local title = Instance.new("TextLabel")
-title.Size = UDim2.new(1, -160, 0, 26)
-title.Position = UDim2.fromOffset(76, 12)
+title.Size = UDim2.new(1, -180, 0, 28)
+title.Position = UDim2.fromOffset(80, 14)
 title.BackgroundTransparency = 1
 title.Text = "EAM"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBlack
-title.TextSize = 22
+title.TextSize = 24
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 4
 title.Parent = header
 
 local subtitle = Instance.new("TextLabel")
-subtitle.Size = UDim2.new(1, -160, 0, 16)
-subtitle.Position = UDim2.fromOffset(76, 38)
+subtitle.Size = UDim2.new(1, -180, 0, 16)
+subtitle.Position = UDim2.fromOffset(80, 42)
 subtitle.BackgroundTransparency = 1
-subtitle.Text = "Muscle Legends  •  v1"
+subtitle.Text = "Muscle Legends"
 subtitle.TextColor3 = Color3.fromRGB(150, 150, 180)
 subtitle.Font = Enum.Font.GothamMedium
 subtitle.TextSize = 11
@@ -334,22 +324,24 @@ subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.ZIndex = 4
 subtitle.Parent = header
 
+-- minimize button (working)
 local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.fromOffset(32, 32)
-minBtn.Position = UDim2.new(1, -44, 0, 20)
-minBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 45)
+minBtn.Size = UDim2.fromOffset(34, 34)
+minBtn.Position = UDim2.new(1, -48, 0, 23)
+minBtn.BackgroundColor3 = Color3.fromRGB(32, 32, 48)
 minBtn.BorderSizePixel = 0
 minBtn.Text = "–"
-minBtn.TextColor3 = Color3.fromRGB(220, 220, 235)
+minBtn.TextColor3 = Color3.fromRGB(230, 230, 245)
 minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = 20
+minBtn.TextSize = 22
 minBtn.ZIndex = 4
 minBtn.Parent = header
 Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
 
+-- scroll
 local scroll = Instance.new("ScrollingFrame")
-scroll.Size = UDim2.new(1, -20, 1, -92)
-scroll.Position = UDim2.fromOffset(10, 84)
+scroll.Size = UDim2.new(1, -20, 1, -98)
+scroll.Position = UDim2.fromOffset(10, 90)
 scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 3
@@ -360,7 +352,7 @@ scroll.ZIndex = 3
 scroll.Parent = frame
 
 local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 8)
+layout.Padding = UDim.new(0, 7)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = scroll
 
@@ -368,7 +360,7 @@ local function bindButton(btn, fn)
     local last = 0
     local function fire()
         local n = tick()
-        if n - last < 0.25 then return end
+        if n - last < 0.3 then return end
         last = n
         fn()
     end
@@ -379,6 +371,7 @@ local function bindButton(btn, fn)
     end)
 end
 
+-- toggle with pill switch
 local function makeToggle(labelText, key, callback)
     local btn = Instance.new("TextButton")
     btn.Size = UDim2.new(1, -8, 0, 48)
@@ -404,7 +397,7 @@ local function makeToggle(labelText, key, callback)
     label.Position = UDim2.fromOffset(24, 0)
     label.BackgroundTransparency = 1
     label.Text = labelText
-    label.TextColor3 = Color3.fromRGB(230, 230, 245)
+    label.TextColor3 = Color3.fromRGB(235, 235, 250)
     label.Font = Enum.Font.GothamMedium
     label.TextSize = 14
     label.TextXAlignment = Enum.TextXAlignment.Left
@@ -423,7 +416,7 @@ local function makeToggle(labelText, key, callback)
     local knob = Instance.new("Frame")
     knob.Size = UDim2.fromOffset(18, 18)
     knob.Position = UDim2.fromOffset(3, 3)
-    knob.BackgroundColor3 = Color3.fromRGB(100, 100, 120)
+    knob.BackgroundColor3 = Color3.fromRGB(110, 110, 130)
     knob.BorderSizePixel = 0
     knob.ZIndex = 6
     knob.Parent = pill
@@ -433,7 +426,7 @@ local function makeToggle(labelText, key, callback)
         TweenService:Create(knob, TweenInfo.new(0.18, Enum.EasingStyle.Quad),
             { Position = on and UDim2.fromOffset(27, 3) or UDim2.fromOffset(3, 3),
               BackgroundColor3 = on and Color3.fromRGB(255, 255, 255)
-                                      or Color3.fromRGB(100, 100, 120) }):Play()
+                                      or Color3.fromRGB(110, 110, 130) }):Play()
         TweenService:Create(pill, TweenInfo.new(0.18),
             { BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
                                     or Color3.fromRGB(38, 38, 52) }):Play()
@@ -451,9 +444,9 @@ end
 
 local function sectionHeader(text)
     local lbl = Instance.new("TextLabel")
-    lbl.Size = UDim2.new(1, -8, 0, 22)
+    lbl.Size = UDim2.new(1, -8, 0, 20)
     lbl.BackgroundTransparency = 1
-    lbl.Text = "— " .. text:upper() .. " —"
+    lbl.Text = text:upper()
     lbl.TextColor3 = Color3.fromRGB(160, 100, 255)
     lbl.Font = Enum.Font.GothamBold
     lbl.TextSize = 10
@@ -483,6 +476,7 @@ sectionHeader("Progress")
 makeToggle("Auto Rebirth", "autoRebirth")
 makeToggle("Auto Buy Pet", "autoBuyPet")
 
+-- minimise: hide everything but header
 local expanded = true
 bindButton(minBtn, function()
     expanded = not expanded
@@ -491,13 +485,14 @@ bindButton(minBtn, function()
             child.Visible = expanded
         end
     end
-    frame.Size = expanded and UDim2.fromOffset(320, 530)
-                          or UDim2.fromOffset(320, 74)
-    glow.Size  = expanded and UDim2.fromOffset(330, 540)
-                          or UDim2.fromOffset(330, 84)
+    frame.Size = expanded and UDim2.fromOffset(330, 510)
+                          or UDim2.fromOffset(330, 80)
+    glow.Size  = expanded and UDim2.fromOffset(340, 520)
+                          or UDim2.fromOffset(340, 90)
     minBtn.Text = expanded and "–" or "+"
 end)
 
+-- drag
 local dragging, dragStart, startPos
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
@@ -527,6 +522,7 @@ header.InputEnded:Connect(function(input)
     end
 end)
 
+-- right shift to hide whole UI
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.RightShift then
