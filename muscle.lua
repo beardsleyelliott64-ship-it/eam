@@ -9,26 +9,29 @@ setreadonly(mt, false)
 mt.__namecall = newcclosure(function(self, ...)
     local method = getnamecallmethod()
     if not MuscleEvent and (method == "FireServer" or method == "InvokeServer") then
-        if self.Name == "MuscleEvent" then
+        local ok, n = pcall(function() return self.Name end)
+        if ok and type(n) == "string" and n:lower():find("muscle") then
             MuscleEvent = self
+            print("[ML] captured:", self:GetFullName(), "raw name:", n)
         end
     end
     return oldNamecall(self, ...)
 end)
 setreadonly(mt, true)
 
-print("[ML] hook installed — punch once to capture MuscleEvent")
+print("[ML] hook live — punch once now")
 
-for _ = 1, 150 do
+for _ = 1, 300 do
     if MuscleEvent then break end
     task.wait(0.1)
 end
 
 if not MuscleEvent then
-    warn("[ML] MuscleEvent never fired — punch once and re-run")
+    warn("[ML] capture timed out — re-run and punch immediately")
     return
 end
-print("[ML] captured:", MuscleEvent:GetFullName())
+
+print("[ML] ready — MuscleEvent at", MuscleEvent:GetFullName())
 
 local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
 local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
