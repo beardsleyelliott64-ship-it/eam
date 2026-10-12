@@ -1,5 +1,5 @@
 -- language: Lua, file: muscle.lua, target: Pumpkin Muscle Legends
--- waits for MuscleEvent as a direct child of LocalPlayer.
+-- no blocking waits. poll in background. UI appears immediately.
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -7,38 +7,30 @@ local UserInputService  = game:GetService("UserInputService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer       = Players.LocalPlayer
 
-print("[ML] waiting for MuscleEvent on LocalPlayer...")
-
 local MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-if not MuscleEvent then
-    MuscleEvent = LocalPlayer:WaitForChild("MuscleEvent", 120)
-end
-
-if not MuscleEvent then
-    -- fallback: keep polling while the character exists
-    task.spawn(function()
-        while not MuscleEvent do
-            MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
-            if not MuscleEvent and LocalPlayer.Character then
-                MuscleEvent = LocalPlayer.Character:FindFirstChild("MuscleEvent")
-            end
-            task.wait(1)
-        end
-        print("[ML] MuscleEvent appeared:", MuscleEvent:GetFullName())
-    end)
-    print("[ML] not found yet — polling in background. panel will appear now.")
-end
-
 if MuscleEvent then
-    print("[ML] MuscleEvent at:", MuscleEvent:GetFullName())
+    print("[ML] MuscleEvent already present:", MuscleEvent:GetFullName())
 end
+
+task.spawn(function()
+    while not MuscleEvent do
+        MuscleEvent = LocalPlayer:FindFirstChild("MuscleEvent")
+        if not MuscleEvent and LocalPlayer.Character then
+            MuscleEvent = LocalPlayer.Character:FindFirstChild("MuscleEvent")
+        end
+        if MuscleEvent then
+            print("[ML] MuscleEvent appeared:", MuscleEvent:GetFullName())
+            break
+        end
+        task.wait(1)
+    end
+end)
 
 local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
 local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
 print("[ML] rEvents:", rEvents and "ok" or "MISS",
       "| cPetshopRemote:", petshopRemote and "ok" or "MISS")
 
--- ── flags ──────────────────────────────────────────────────────────────────
 local flags = {
     fastRep    = false,
     autoRebirth = false,
@@ -49,10 +41,10 @@ local flags = {
     petDelay   = 1,
 }
 
--- ── loops ──────────────────────────────────────────────────────────────────
 local function firePunch()
     local ev = MuscleEvent or LocalPlayer:FindFirstChild("MuscleEvent")
     if not ev then return end
+    MuscleEvent = ev
     pcall(function() ev:FireServer("punch", "leftHand") end)
     pcall(function() ev:FireServer("punch", "rightHand") end)
 end
@@ -87,7 +79,6 @@ if petshopRemote then
     end)
 end
 
--- ── UI ─────────────────────────────────────────────────────────────────────
 local gui = Instance.new("ScreenGui")
 gui.Name = "MLOwn"
 gui.ResetOnSpawn = false
@@ -259,7 +250,6 @@ makeToggle("Auto Rebirth", "autoRebirth")
 sectionHeader("Pets")
 makeToggle("Auto Buy Pet", "autoBuyPet")
 
--- drag by header
 local dragging, dragStart, startPos
 header.InputBegan:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
