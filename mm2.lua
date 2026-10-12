@@ -1,5 +1,5 @@
 -- language: Lua, file: mm2.lua, target: Murder Mystery 2
--- own build. mobile-friendly. slow glide coin loop. fixed fly. cool UI.
+-- real remotes. role via GetCurrentPlayerData. kill via tool Activate.
 
 local Players           = game:GetService("Players")
 local RunService        = game:GetService("RunService")
@@ -10,41 +10,97 @@ local Lighting          = game:GetService("Lighting")
 local LocalPlayer       = Players.LocalPlayer
 local Camera            = workspace.CurrentCamera
 
--- ── remotes ────────────────────────────────────────────────────────────────
-local Remotes = ReplicatedStorage:FindFirstChild("Remotes")
-    or ReplicatedStorage:FindFirstChild("RemoteEvents")
-    or ReplicatedStorage
-
-local function findRemote(name)
-    local r = Remotes:FindFirstChild(name)
-    if r then return r end
-    for _, v in ipairs(Remotes:GetDescendants()) do
-        if v.Name == name then return v end
-    end
-    return nil
+-- ── resolve real remotes ───────────────────────────────────────────────────
+local Remotes = ReplicatedStorage:WaitForChild("Remotes", 10)
+if not Remotes then
+    warn("[MM2] Remotes folder not found")
+    return
 end
 
-local shootRemote = findRemote("Shoot")
-local stabRemote  = findRemote("Stab")
-local coinRemote  = findRemote("Coin")
-local equipRemote = findRemote("Equip")
+local Gameplay  = Remotes:FindFirstChild("Gameplay")
+local Inventory = Remotes:FindFirstChild("Inventory")
+local Extras    = Remotes:FindFirstChild("Extras")
 
-print("[MM2] remotes — Stab:", stabRemote and "ok" or "MISS",
-      "Coin:", coinRemote and "ok" or "MISS",
-      "Shoot:", shootRemote and "ok" or "MISS")
+local GetCoin        = Gameplay and Gameplay:FindFirstChild("GetCoin")
+local GetPlayerData  = Gameplay and Gameplay:FindFirstChild("GetCurrentPlayerData")
+local EquipRemote    = Inventory and Inventory:FindFirstChild("Equip")
+
+print("[MM2] GetCoin:", GetCoin and "ok" or "MISS",
+      "| Equip:", EquipRemote and "ok" or "MISS",
+      "| GetPlayerData:", GetPlayerData and "ok" or "MISS")
+
+-- ── role cache (pulled from GetCurrentPlayerData) ──────────────────────────
+local roleCache = {}   -- playerName -> "Murderer" | "Sheriff" | "Innocent"
+
+local function fetchMyData()
+    if not GetPlayerData then return end
+    local ok, data = pcall(function() return GetPlayerData:InvokeServer() end)
+    if not ok or type(data) ~= "table" then return end
+    -- data shape is game-specific; look for any string field that matches a role
+    for _, v in pairs(data) do
+        if type(v) == "string" then
+            local lv = v:lower()
+            if lv:find("murder") or lv:find("sheriff") or lv:find("innocent") then
+                roleCache[LocalPlayer.Name] = v
+                return
+            end
+        end
+    end
+end
+
+-- pull once at load, then every 5s
+task.spawn(function()
+    while task.wait(5) do fetchMyData() end
+end)
+fetchMyData()
+
+-- Infer other players' roles by elimination + kill-event tracking
+local deadPlayers = {}
+local lastKnownMurderer, lastKnownSheriff
+
+-- listen for KillEvent args — the dump showed role strings arrive here
+if Gameplay then
+    local killEv = Gameplay:FindFirstChild("KillEvent")
+    if killEv then
+        killEv.OnClientEvent:Connect(function(role, evt, victimName)
+            if type(role) == "string" then
+                -- role arg here is often the killer's role, evt tells what happened
+                if role:lower():find("murder") then lastKnownMurderer = victimName end
+                if role:lower():find("sheriff") then lastKnownSheriff = victimName end
+            end
+            if evt == "MurdererDied" then
+                deadPlayers[victimName] = true
+                lastKnownMurderer = nil
+            end
+        end)
+    end
+end
+
+local function getRoleOf(player)
+    if deadPlayers[player.Name] then return "Dead" end
+    if roleCache[player.Name] then return roleCache[player.Name] end
+    if lastKnownMurderer == player.Name then return "Murderer" end
+    if lastKnownSheriff == player.Name then return "Sheriff" end
+    return "Innocent"
+end
+
+local function getMyRole() return getRoleOf(LocalPlayer):lower() end
+local function isMurderer() return getMyRole():find("murder") ~= nil end
+local function isSheriff()  return getMyRole():find("sheriff") ~= nil end
 
 -- ── flags ──────────────────────────────────────────────────────────────────
 local flags = {
     esp = false, speed = false, noclip = false, infiniteJump = false,
-    killAll = false, autoShoot = false, autoStab = false,
     autoFarm = false, fly = false, flySpeed = 60,
-    antiFling = false, killAura = false,
-    bringGun = false, fpsBoost = false, rejoin = false,
+    antiFling = false, autoActivate = false,
+    bringGun = false, fpsBoost = false,
+    autoChase = false,
 }
 
 local espTracked = {}
 local flyConn, flyVel
 local farmConn, farmVel, farmTarget
+local chaseConn, chaseVel
 local originalLighting = {}
 
 -- ── ESP ────────────────────────────────────────────────────────────────────
@@ -64,20 +120,16 @@ local function clearESP()
     espTracked = {}
 end
 
-local function getRole(player)
-    local rv = player:FindFirstChild("Role")
-        or (player.Character and player.Character:FindFirstChild("Role"))
-    return rv and rv.Value and tostring(rv.Value) or "Innocent"
-end
-
 local function applyESP(player)
     if player == LocalPlayer or not player.Character then return end
     local head = player.Character:FindFirstChild("Head")
     if not head then return end
 
-    local role = getRole(player):lower()
+    local role = getRoleOf(player):lower()
     local fill, txt, txtCol
-    if role:find("murder") then
+    if role == "dead" then
+        fill, txt, txtCol = Color3.fromRGB(120,120,120), "DEAD", Color3.fromRGB(120,120,120)
+    elseif role:find("murder") then
         fill, txt, txtCol = Color3.fromRGB(255,60,60), "MURDERER", Color3.fromRGB(255,60,60)
     elseif role:find("sheriff") then
         fill, txt, txtCol = Color3.fromRGB(60,130,255), "SHERIFF", Color3.fromRGB(60,130,255)
@@ -188,85 +240,36 @@ local function startFly()
     end)
 end
 
--- ── roles ──────────────────────────────────────────────────────────────────
-local function getMyRole()
-    local r = LocalPlayer:FindFirstChild("Role")
-        or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Role"))
-    return r and tostring(r.Value):lower() or ""
+-- ── auto activate (real MM2 kill: swing tool near target) ─────────────────
+local function equippedTool()
+    local c = LocalPlayer.Character
+    if not c then return nil end
+    return c:FindFirstChildOfClass("Tool")
 end
-local function isMurderer() return getMyRole():find("murder") ~= nil end
-local function isSheriff()  return getMyRole():find("sheriff") ~= nil end
 
--- ── combat ─────────────────────────────────────────────────────────────────
-local function killAll()
-    if not stabRemote then return end
+local function spamActivate()
+    if not flags.autoActivate then return end
+    local tool = equippedTool()
+    if not tool then return end
+    pcall(function() tool:Activate() end)
+end
+
+-- call Activate when a target is within hitbox range
+local function autoActivateNearby()
+    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    local tool = equippedTool()
+    if not tool then return end
+
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LocalPlayer and p.Character then
             local hrp = p.Character:FindFirstChild("HumanoidRootPart")
             local h = p.Character:FindFirstChildOfClass("Humanoid")
             if hrp and h and h.Health > 0 then
-                pcall(function() stabRemote:FireServer(hrp) end)
-                pcall(function() stabRemote:FireServer(p) end)
-            end
-        end
-    end
-end
-
-local function autoShoot()
-    if not shootRemote or not isSheriff() then return end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character
-           and getRole(p):lower():find("murder") then
-            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-            if hrp then pcall(function() shootRemote:FireServer(hrp) end) end
-        end
-    end
-end
-
-local function autoStab()
-    if not stabRemote or not isMurderer() then return end
-    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHrp then return end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-            local h = p.Character:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0
-               and (hrp.Position - myHrp.Position).Magnitude < 15 then
-                pcall(function() stabRemote:FireServer(hrp) end)
-                pcall(function() stabRemote:FireServer(p) end)
-            end
-        end
-    end
-end
-
-local function killAura()
-    if not stabRemote then return end
-    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHrp then return end
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
-            local h = p.Character:FindFirstChildOfClass("Humanoid")
-            if hrp and h and h.Health > 0
-               and (hrp.Position - myHrp.Position).Magnitude < 8 then
-                pcall(function() stabRemote:FireServer(hrp) end)
-                pcall(function() stabRemote:FireServer(p) end)
-            end
-        end
-    end
-end
-
-local function bringGun()
-    if not equipRemote then return end
-    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-    if not myHrp then return end
-    for _, obj in ipairs(workspace:GetDescendants()) do
-        if obj:IsA("BasePart") and obj.Name:lower():find("gun") then
-            local dist = (obj.Position - myHrp.Position).Magnitude
-            if dist < 15 and not obj:IsDescendantOf(LocalPlayer.Character) then
-                pcall(function() equipRemote:FireServer(obj) end)
-                pcall(function() equipRemote:FireServer(obj.Name) end)
+                local d = (hrp.Position - myHrp.Position).Magnitude
+                if d < 6 then
+                    pcall(function() tool:Activate() end)
+                end
             end
         end
     end
@@ -287,7 +290,7 @@ RunService.Heartbeat:Connect(function()
     end
 end)
 
--- ── coin farm ──────────────────────────────────────────────────────────────
+-- ── coin farm (uses real GetCoin remote) ───────────────────────────────────
 local function findNearestCoin(origin)
     local nearest, best = nil, math.huge
     for _, obj in ipairs(workspace:GetDescendants()) do
@@ -341,9 +344,10 @@ local function startFarm()
         if farmTarget then
             local dist = (farmTarget.Position - myHrp.Position).Magnitude
             if dist < 4 then
-                if coinRemote then
-                    pcall(function() coinRemote:FireServer(farmTarget) end)
-                    pcall(function() coinRemote:FireServer(farmTarget.Position) end)
+                if GetCoin then
+                    pcall(function() GetCoin:FireServer(farmTarget) end)
+                    pcall(function() GetCoin:FireServer(farmTarget.Position) end)
+                    pcall(function() GetCoin:FireServer() end)
                 end
                 farmVel.Velocity = Vector3.zero
                 farmTarget = nil
@@ -353,6 +357,89 @@ local function startFarm()
             end
         else
             farmVel.Velocity = Vector3.zero
+        end
+    end)
+end
+
+-- ── bring gun (real Equip remote) ──────────────────────────────────────────
+local function bringGun()
+    if not EquipRemote then return end
+    local myHrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    for _, obj in ipairs(workspace:GetDescendants()) do
+        if obj:IsA("BasePart")
+           and (obj.Name:lower():find("gun") or obj.Name:lower():find("knife")) then
+            if (obj.Position - myHrp.Position).Magnitude < 20
+               and not obj:IsDescendantOf(LocalPlayer.Character) then
+                pcall(function() EquipRemote:FireServer(obj) end)
+            end
+        end
+    end
+end
+
+-- ── auto chase (fly to target + spam Activate) ─────────────────────────────
+local function stopChase()
+    if chaseConn then chaseConn:Disconnect() chaseConn = nil end
+    if chaseVel then chaseVel:Destroy() chaseVel = nil end
+    local c = LocalPlayer.Character
+    if c then
+        local h = c:FindFirstChildOfClass("Humanoid")
+        if h then h.PlatformStand = false end
+    end
+end
+
+local function startChase()
+    stopChase()
+    local c = LocalPlayer.Character
+    if not c then return end
+    local myHrp = c:FindFirstChild("HumanoidRootPart")
+    local h = c:FindFirstChildOfClass("Humanoid")
+    if not myHrp or not h then return end
+
+    h.PlatformStand = true
+    flags.noclip = true
+
+    chaseVel = Instance.new("BodyVelocity")
+    chaseVel.MaxForce = Vector3.new(1e6, 1e6, 1e6)
+    chaseVel.Velocity = Vector3.zero
+    chaseVel.Parent = myHrp
+
+    chaseConn = RunService.Heartbeat:Connect(function()
+        if not flags.autoChase then stopChase() return end
+        if not LocalPlayer.Character then return end
+        local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if not hrp or not chaseVel or not chaseVel.Parent then return end
+
+        local targetName
+        if isMurderer() then targetName = "sheriff"
+        elseif isSheriff() then targetName = "murder"
+        else targetName = nil end
+        if not targetName then chaseVel.Velocity = Vector3.zero return end
+
+        local target, targetHrp
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character
+               and getRoleOf(p):lower():find(targetName) then
+                targetHrp = p.Character:FindFirstChild("HumanoidRootPart")
+                if targetHrp then target = p break end
+            end
+        end
+
+        if targetHrp and target then
+            local dist = (targetHrp.Position - hrp.Position).Magnitude
+            if dist < 4 then
+                chaseVel.Velocity = Vector3.zero
+                -- face them and spam Activate
+                hrp.CFrame = CFrame.new(hrp.Position, Vector3.new(
+                    targetHrp.Position.X, hrp.Position.Y, targetHrp.Position.Z))
+                local tool = equippedTool()
+                if tool then pcall(function() tool:Activate() end) end
+            else
+                local dir = (targetHrp.Position - hrp.Position).Unit
+                chaseVel.Velocity = dir * 55
+            end
+        else
+            chaseVel.Velocity = Vector3.zero
         end
     end)
 end
@@ -394,14 +481,11 @@ RunService.Heartbeat:Connect(function()
     end
     if flags.speed then applySpeed() end
     if flags.noclip then applyNoclip() end
-    if flags.killAll then killAll() end
-    if flags.autoShoot then autoShoot() end
-    if flags.autoStab then autoStab() end
-    if flags.killAura then killAura() end
+    if flags.autoActivate then autoActivateNearby() end
     if flags.bringGun then bringGun() end
 end)
 
--- ── UI ─────────────────────────────────────────────────────────────────────
+-- ── UI (clean flat dark, mobile-safe) ──────────────────────────────────────
 local gui = Instance.new("ScreenGui")
 gui.Name = "MM2Own"
 gui.ResetOnSpawn = false
@@ -409,97 +493,69 @@ gui.IgnoreGuiInset = true
 gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 gui.Parent = LocalPlayer:WaitForChild("PlayerGui")
 
-local shadow = Instance.new("Frame")
-shadow.Size = UDim2.fromOffset(300, 500)
-shadow.Position = UDim2.new(0.5, -148, 0, 92)
-shadow.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-shadow.BackgroundTransparency = 0.5
-shadow.BorderSizePixel = 0
-shadow.ZIndex = 1
-shadow.Parent = gui
-Instance.new("UICorner", shadow).CornerRadius = UDim.new(0, 18)
-
 local frame = Instance.new("Frame")
-frame.Size = UDim2.fromOffset(300, 500)
-frame.Position = UDim2.new(0.5, -150, 0, 90)
-frame.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+frame.Size = UDim2.fromOffset(300, 520)
+frame.Position = UDim2.new(0.5, -150, 0, 80)
+frame.BackgroundColor3 = Color3.fromRGB(15, 15, 22)
 frame.BorderSizePixel = 0
-frame.ZIndex = 2
 frame.Parent = gui
-Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 16)
+Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 14)
 
 local stroke = Instance.new("UIStroke")
 stroke.Thickness = 1.5
 stroke.Color = Color3.fromRGB(150, 90, 255)
-stroke.Transparency = 0
+stroke.Transparency = 0.15
 stroke.Parent = frame
 
-local strokeGrad = Instance.new("UIGradient")
-strokeGrad.Color = ColorSequence.new{
-    ColorSequenceKeypoint.new(0.00, Color3.fromRGB(255, 80, 200)),
-    ColorSequenceKeypoint.new(0.33, Color3.fromRGB(150, 90, 255)),
-    ColorSequenceKeypoint.new(0.66, Color3.fromRGB(80, 200, 255)),
-    ColorSequenceKeypoint.new(1.00, Color3.fromRGB(255, 80, 200)),
-}
-strokeGrad.Rotation = 0
-strokeGrad.Parent = stroke
-
-task.spawn(function()
-    while strokeGrad.Parent do
-        strokeGrad.Rotation = (strokeGrad.Rotation + 1) % 360
-        task.wait(0.03)
-    end
-end)
-
 local header = Instance.new("Frame")
-header.Size = UDim2.new(1, 0, 0, 56)
-header.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+header.Size = UDim2.new(1, 0, 0, 54)
+header.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
 header.BorderSizePixel = 0
 header.ZIndex = 3
 header.Parent = frame
-Instance.new("UICorner", header).CornerRadius = UDim.new(0, 16)
+Instance.new("UICorner", header).CornerRadius = UDim.new(0, 14)
 
 local headerCover = Instance.new("Frame")
-headerCover.Size = UDim2.new(1, 0, 0, 22)
-headerCover.Position = UDim2.new(0, 0, 1, -22)
-headerCover.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+headerCover.Size = UDim2.new(1, 0, 0, 20)
+headerCover.Position = UDim2.new(0, 0, 1, -20)
+headerCover.BackgroundColor3 = Color3.fromRGB(22, 22, 32)
 headerCover.BorderSizePixel = 0
 headerCover.ZIndex = 3
 headerCover.Parent = header
 
 local title = Instance.new("TextLabel")
 title.Size = UDim2.new(1, -80, 0, 26)
-title.Position = UDim2.fromOffset(18, 8)
+title.Position = UDim2.fromOffset(18, 6)
 title.BackgroundTransparency = 1
 title.Text = "MM2"
 title.TextColor3 = Color3.fromRGB(255, 255, 255)
 title.Font = Enum.Font.GothamBlack
-title.TextSize = 22
+title.TextSize = 20
 title.TextXAlignment = Enum.TextXAlignment.Left
 title.ZIndex = 4
 title.Parent = header
 
 local subtitle = Instance.new("TextLabel")
 subtitle.Size = UDim2.new(1, -80, 0, 14)
-subtitle.Position = UDim2.fromOffset(18, 32)
+subtitle.Position = UDim2.fromOffset(18, 30)
 subtitle.BackgroundTransparency = 1
 subtitle.Text = "own build"
 subtitle.TextColor3 = Color3.fromRGB(140, 140, 170)
-subtitle.Font = Enum.Font.GothamMedium
-subtitle.TextSize = 11
+subtitle.Font = Enum.Font.Gotham
+subtitle.TextSize = 10
 subtitle.TextXAlignment = Enum.TextXAlignment.Left
 subtitle.ZIndex = 4
 subtitle.Parent = header
 
 local minBtn = Instance.new("TextButton")
-minBtn.Size = UDim2.fromOffset(36, 36)
-minBtn.Position = UDim2.new(1, -46, 0, 10)
+minBtn.Size = UDim2.fromOffset(34, 34)
+minBtn.Position = UDim2.new(1, -44, 0, 10)
 minBtn.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
 minBtn.BorderSizePixel = 0
 minBtn.Text = "–"
 minBtn.TextColor3 = Color3.fromRGB(220, 220, 235)
 minBtn.Font = Enum.Font.GothamBold
-minBtn.TextSize = 22
+minBtn.TextSize = 20
 minBtn.ZIndex = 4
 minBtn.Parent = header
 Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0, 8)
@@ -511,14 +567,13 @@ scroll.BackgroundTransparency = 1
 scroll.BorderSizePixel = 0
 scroll.ScrollBarThickness = 3
 scroll.ScrollBarImageColor3 = Color3.fromRGB(150, 90, 255)
-scroll.ScrollBarImageTransparency = 0.2
 scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
 scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
 scroll.ZIndex = 3
 scroll.Parent = frame
 
 local layout = Instance.new("UIListLayout")
-layout.Padding = UDim.new(0, 8)
+layout.Padding = UDim.new(0, 7)
 layout.SortOrder = Enum.SortOrder.LayoutOrder
 layout.Parent = scroll
 
@@ -526,19 +581,31 @@ local expanded = true
 local function toggleMinimise()
     expanded = not expanded
     for _, child in ipairs(frame:GetChildren()) do
-        if child ~= header and child ~= stroke and child ~= strokeGrad then
+        if child ~= header and child ~= stroke then
             child.Visible = expanded
         end
     end
-    frame.Size = expanded and UDim2.fromOffset(300, 500)
-                          or UDim2.fromOffset(300, 56)
-    shadow.Size = frame.Size
+    frame.Size = expanded and UDim2.fromOffset(300, 520)
+                          or UDim2.fromOffset(300, 54)
     minBtn.Text = expanded and "–" or "+"
 end
-minBtn.MouseButton1Click:Connect(toggleMinimise)
-minBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch then toggleMinimise() end
-end)
+
+local function bindButton(btn, fn)
+    local last = 0
+    local function fire()
+        local n = tick()
+        if n - last < 0.25 then return end
+        last = n
+        fn()
+    end
+    btn.MouseButton1Click:Connect(fire)
+    btn.Activated:Connect(fire)
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then fire() end
+    end)
+end
+
+bindButton(minBtn, toggleMinimise)
 
 local function makeToggle(labelText, key, callback)
     local btn = Instance.new("TextButton")
@@ -551,14 +618,14 @@ local function makeToggle(labelText, key, callback)
     btn.Parent = scroll
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 10)
 
-    local leftAccent = Instance.new("Frame")
-    leftAccent.Size = UDim2.new(0, 3, 1, -14)
-    leftAccent.Position = UDim2.fromOffset(8, 7)
-    leftAccent.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
-    leftAccent.BorderSizePixel = 0
-    leftAccent.ZIndex = 5
-    leftAccent.Parent = btn
-    Instance.new("UICorner", leftAccent).CornerRadius = UDim.new(0, 2)
+    local accent = Instance.new("Frame")
+    accent.Size = UDim2.new(0, 3, 1, -14)
+    accent.Position = UDim2.fromOffset(8, 7)
+    accent.BackgroundColor3 = Color3.fromRGB(70, 70, 90)
+    accent.BorderSizePixel = 0
+    accent.ZIndex = 5
+    accent.Parent = btn
+    Instance.new("UICorner", accent).CornerRadius = UDim.new(0, 2)
 
     local label = Instance.new("TextLabel")
     label.Size = UDim2.new(1, -90, 1, 0)
@@ -585,11 +652,7 @@ local function makeToggle(labelText, key, callback)
     status.Parent = btn
     Instance.new("UICorner", status).CornerRadius = UDim.new(0, 5)
 
-    local lastFire = 0
-    local function fire()
-        local now = tick()
-        if now - lastFire < 0.3 then return end
-        lastFire = now
+    bindButton(btn, function()
         flags[key] = not flags[key]
         local on = flags[key]
         status.Text = on and "ON" or "OFF"
@@ -597,14 +660,9 @@ local function makeToggle(labelText, key, callback)
                                        or Color3.fromRGB(45, 45, 58)
         status.TextColor3 = on and Color3.fromRGB(255, 255, 255)
                                    or Color3.fromRGB(160, 160, 180)
-        leftAccent.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
-                                          or Color3.fromRGB(70, 70, 90)
+        accent.BackgroundColor3 = on and Color3.fromRGB(150, 90, 255)
+                                       or Color3.fromRGB(70, 70, 90)
         if callback then callback() end
-    end
-
-    btn.MouseButton1Click:Connect(fire)
-    btn.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.Touch then fire() end
     end)
 end
 
@@ -627,13 +685,9 @@ makeToggle("ESP", "esp", function()
         for _, p in ipairs(Players:GetPlayers()) do
             if p ~= LocalPlayer then applyESP(p) end
         end
-    else
-        clearESP()
-    end
+    else clearESP() end
 end)
-makeToggle("FPS Boost", "fpsBoost", function()
-    applyFPSBoost(flags.fpsBoost)
-end)
+makeToggle("FPS Boost", "fpsBoost", function() applyFPSBoost(flags.fpsBoost) end)
 
 sectionHeader("Movement")
 makeToggle("Speed", "speed", applySpeed)
@@ -645,61 +699,16 @@ end)
 makeToggle("Anti Fling", "antiFling", nil)
 
 sectionHeader("Combat")
+makeToggle("Auto Activate", "autoActivate", nil)
+makeToggle("Auto Chase Target", "autoChase", function()
+    if flags.autoChase then startChase() else stopChase() end
+end)
 makeToggle("Bring Gun", "bringGun", nil)
-makeToggle("Kill All", "killAll", nil)
-makeToggle("Kill Aura", "killAura", nil)
-makeToggle("Auto Shoot", "autoShoot", nil)
-makeToggle("Auto Stab", "autoStab", nil)
 
 sectionHeader("Economy")
 makeToggle("Auto Farm Coins", "autoFarm", function()
     if flags.autoFarm then startFarm() else stopFarm() end
 end)
-
-sectionHeader("Misc")
-makeToggle("Rejoin", "rejoin", function()
-    if not flags.rejoin then return end
-    flags.rejoin = false
-    local ok = pcall(function()
-        TeleportService:TeleportToPlaceInstance(
-            game.PlaceId, game.JobId, LocalPlayer)
-    end)
-    if not ok then
-        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-    end
-end)
-
-local dragging, dragStart, startPos
-local function beginDrag(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-       or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = frame.Position
-    end
-end
-local function updateDrag(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
-                     or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        local newPos = UDim2.new(
-            startPos.X.Scale, startPos.X.Offset + delta.X,
-            startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-        frame.Position = newPos
-        shadow.Position = UDim2.new(
-            newPos.X.Scale, newPos.X.Offset + 2,
-            newPos.Y.Scale, newPos.Y.Offset + 2)
-    end
-end
-local function endDrag(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1
-       or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end
-header.InputBegan:Connect(beginDrag)
-header.InputChanged:Connect(updateDrag)
-header.InputEnded:Connect(endDrag)
 
 Players.PlayerAdded:Connect(function(p)
     if flags.esp then
@@ -710,5 +719,30 @@ Players.PlayerAdded:Connect(function(p)
     end
 end)
 Players.PlayerRemoving:Connect(removeESP)
+
+local dragging, dragStart, startPos
+header.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+       or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+    end
+end)
+header.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+                     or input.UserInputType == Enum.UserInputType.Touch) then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(
+            startPos.X.Scale, startPos.X.Offset + delta.X,
+            startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+header.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1
+       or input.UserInputType == Enum.UserInputType.Touch then
+        dragging = false
+    end
+end)
 
 print("[MM2] own build loaded")
