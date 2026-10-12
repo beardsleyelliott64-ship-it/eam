@@ -2,33 +2,38 @@ local Players           = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local LocalPlayer       = Players.LocalPlayer
 
-local function deepFind(root, name)
-    if not root then return nil end
-    for _, v in ipairs(root:GetDescendants()) do
-        if v.Name == name then return v end
+local MuscleEvent
+local mt = getrawmetatable(game)
+local oldNamecall = mt.__namecall
+setreadonly(mt, false)
+mt.__namecall = newcclosure(function(self, ...)
+    local method = getnamecallmethod()
+    if not MuscleEvent and (method == "FireServer" or method == "InvokeServer") then
+        if self.Name == "MuscleEvent" then
+            MuscleEvent = self
+        end
     end
-    return nil
-end
+    return oldNamecall(self, ...)
+end)
+setreadonly(mt, true)
 
-local MuscleEvent =
-    LocalPlayer:FindFirstChild("MuscleEvent")
-    or (LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("MuscleEvent"))
-    or deepFind(LocalPlayer, "MuscleEvent")
-    or deepFind(LocalPlayer.Character or workspace, "MuscleEvent")
-    or deepFind(workspace, "MuscleEvent")
+print("[ML] hook installed — punch once to capture MuscleEvent")
+
+for _ = 1, 150 do
+    if MuscleEvent then break end
+    task.wait(0.1)
+end
 
 if not MuscleEvent then
-    warn("[ML] MuscleEvent not found anywhere")
+    warn("[ML] MuscleEvent never fired — punch once and re-run")
     return
 end
-print("[ML] MuscleEvent at:", MuscleEvent:GetFullName())
+print("[ML] captured:", MuscleEvent:GetFullName())
 
 local rEvents = ReplicatedStorage:FindFirstChild("rEvents")
 local petshopRemote = rEvents and rEvents:FindFirstChild("cPetshopRemote")
 if petshopRemote then
     print("[ML] cPetshopRemote found")
-else
-    warn("[ML] cPetshopRemote not found — auto-buy disabled")
 end
 
 local flags = {
@@ -176,19 +181,3 @@ title.InputEnded:Connect(function(input)
 end)
 
 print("[ML] loaded — MuscleEvent at " .. MuscleEvent:GetFullName())
-
--- ── debug dump ──────────────────────────────────────────────────────────────
-local pg = game.Players.LocalPlayer:WaitForChild("PlayerGui")
-print("MLOwn exists:", pg:FindFirstChild("MLOwn") ~= nil)
-local g = pg:FindFirstChild("MLOwn")
-if g then
-    local f = g:FindFirstChild("Frame")
-    print("frame exists:", f ~= nil)
-    if f then
-        print("frame visible:", f.Visible)
-        print("frame position:", tostring(f.Position))
-        print("frame size:", tostring(f.Size))
-    end
-    print("screengui enabled:", g.Enabled)
-end
-print("viewport:", tostring(workspace.CurrentCamera.ViewportSize))
